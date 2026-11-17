@@ -31,29 +31,63 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 2. Read administrator details.
-    const body = await request.json();
+   // 2. Read and validate administrator details.
+   
+let body: unknown;
 
-    const fullName = String(body.fullName || "").trim();
-    const email = String(body.email || "").trim().toLowerCase();
-    const password = String(body.password || "");
+try {
+  body = await request.json();
+} catch {
+  return NextResponse.json(
+    { error: "Invalid JSON request." },
+    { status: 400 }
+  );
+}
 
-    if (
-      !fullName ||
-      fullName.length > 100 ||
-      !email ||
-      !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ||
-      password.length < 12 ||
-      password.length > 128
-    ) {
-      return NextResponse.json(
-        {
-          error:
-            "Enter a valid name and email. Password must be at least 12 characters.",
-        },
-        { status: 400 }
-      );
-    }
+if (
+  !body ||
+  typeof body !== "object" ||
+  Array.isArray(body)
+) {
+  return NextResponse.json(
+    { error: "Invalid request body." },
+    { status: 400 }
+  );
+}
+
+const input = body as Record<string, unknown>;
+
+const fullName =
+  typeof input.fullName === "string"
+    ? input.fullName.trim()
+    : "";
+
+const email =
+  typeof input.email === "string"
+    ? input.email.trim().toLowerCase()
+    : "";
+
+const password =
+  typeof input.password === "string"
+    ? input.password
+    : "";
+
+if (
+  !fullName ||
+  fullName.length > 100 ||
+  !email ||
+  !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ||
+  password.length < 12 ||
+  password.length > 128
+) {
+  return NextResponse.json(
+    {
+      error:
+        "Enter a valid name and email. Password must be at least 12 characters.",
+    },
+    { status: 400 }
+  );
+}
 
     // 3. Connect using the server-only admin client.
     const supabase = createAdminClient();
