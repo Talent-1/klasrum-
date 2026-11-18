@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import TeacherAssignments from "@/components/TeacherAssignments";
 import {
   BookOpen, Users, GraduationCap, ClipboardCheck, ChartNoAxesCombined,
   Settings, Search, Bell, ChevronDown, Plus, ShieldCheck, Menu, X,
@@ -1008,6 +1009,8 @@ export default function Home() {
           </div>)}</div>}
           <div className="rounded-xl bg-amber-50 border border-amber-100 p-4 text-sm text-amber-900"><strong>Important:</strong> Once a grading scale has been used to record scores, the database protects it from modification so previously calculated results cannot silently change. Create a new scale when your school needs a different grading structure.</div>
         </section>}
+        {active === "Teacher Assignments" && <TeacherAssignments schoolId={identity.schoolId} isAdmin={identity.role === "Admin"} />}
+
 
         {active === "School Settings" && <section className="space-y-5">
           <div className="card p-5 md:p-6">
