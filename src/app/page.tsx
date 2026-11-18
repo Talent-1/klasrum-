@@ -28,6 +28,7 @@ type ClassRecord = {
   arm: string;
   level_order: number | null;
 };
+type SubjectRecord = { id: string; school_id: string; name: string; short_code: string | null; is_active: boolean };
 type StudentRecord = {
   id: string;
   school_id: string;
@@ -54,6 +55,7 @@ type StudentForm = {
 const nav = [
   ["Overview", ChartNoAxesCombined],
   ["Classes & Students", Users],
+  ["Subjects", BookOpen],
   ["Teacher Assignments", GraduationCap],
   ["Attendance", ClipboardCheck],
   ["Results & Publishing", BookOpen],
@@ -91,6 +93,17 @@ export default function Home() {
   const [errorMessage, setErrorMessage] = useState("");
   const [classes, setClasses] = useState<ClassRecord[]>([]);
   const [students, setStudents] = useState<StudentRecord[]>([]);
+  const [subjects, setSubjects] = useState<SubjectRecord[]>([]);
+  const [subjectsLoading, setSubjectsLoading] = useState(false);
+  const [subjectsError, setSubjectsError] = useState("");
+  const [subjectNotice, setSubjectNotice] = useState("");
+  const [subjectSearch, setSubjectSearch] = useState("");
+  const [showSubjectForm, setShowSubjectForm] = useState(false);
+  const [editingSubject, setEditingSubject] = useState<SubjectRecord | null>(null);
+  const [subjectName, setSubjectName] = useState("");
+  const [subjectCode, setSubjectCode] = useState("");
+  const [savingSubject, setSavingSubject] = useState(false);
+  const [changingSubject, setChangingSubject] = useState<string | null>(null);
   const [recordsLoading, setRecordsLoading] = useState(false);
   const [recordsError, setRecordsError] = useState("");
   const [selectedClassId, setSelectedClassId] = useState("all");
@@ -211,6 +224,68 @@ export default function Home() {
   useEffect(() => {
     if (identity?.schoolId) void loadSchoolRecords(identity.schoolId);
   }, [identity?.schoolId, loadSchoolRecords]);
+
+  const loadSubjects = useCallback(async (schoolId: string) => {
+    setSubjectsLoading(true); setSubjectsError("");
+    try {
+      const { data, error } = await supabase.from("subjects")
+        .select("id,school_id,name,short_code,is_active")
+        .eq("school_id", schoolId).order("name", { ascending: true });
+      if (error) throw error;
+      setSubjects((data || []) as SubjectRecord[]);
+    } catch (error: unknown) {
+      setSubjectsError(error instanceof Error ? error.message : "Unable to load subjects.");
+    } finally { setSubjectsLoading(false); }
+  }, [supabase]);
+
+  useEffect(() => {
+    if (identity?.schoolId && active === "Subjects") void loadSubjects(identity.schoolId);
+  }, [identity?.schoolId, active, loadSubjects]);
+
+  const openSubjectForm = (subject?: SubjectRecord) => {
+    setEditingSubject(subject || null);
+    setSubjectName(subject?.name || "");
+    setSubjectCode(subject?.short_code || "");
+    setSubjectsError(""); setShowSubjectForm(true);
+  };
+
+  const saveSubject = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!identity || identity.role !== "Admin") return;
+    const name = subjectName.trim();
+    const short_code = subjectCode.trim().toUpperCase() || null;
+    if (!name) { setSubjectsError("Enter a subject name."); return; }
+    setSavingSubject(true); setSubjectsError(""); setSubjectNotice("");
+    try {
+      const payload = { name, short_code };
+      const result = editingSubject
+        ? await supabase.from("subjects").update(payload).eq("id", editingSubject.id).eq("school_id", identity.schoolId)
+        : await supabase.from("subjects").insert({ ...payload, school_id: identity.schoolId, is_active: true });
+      if (result.error) {
+        if (result.error.code === "23505") throw new Error("A subject with that name or short code already exists in this school.");
+        throw result.error;
+      }
+      setShowSubjectForm(false); setEditingSubject(null); setSubjectName(""); setSubjectCode("");
+      await loadSubjects(identity.schoolId);
+      setSubjectNotice(editingSubject ? "Subject updated successfully." : "Subject added successfully.");
+    } catch (error: unknown) {
+      setSubjectsError(error instanceof Error ? error.message : "Unable to save this subject.");
+    } finally { setSavingSubject(false); }
+  };
+
+  const toggleSubjectStatus = async (subject: SubjectRecord) => {
+    if (!identity || identity.role !== "Admin") return;
+    setChangingSubject(subject.id); setSubjectsError(""); setSubjectNotice("");
+    try {
+      const { error } = await supabase.from("subjects").update({ is_active: !subject.is_active })
+        .eq("id", subject.id).eq("school_id", identity.schoolId);
+      if (error) throw error;
+      await loadSubjects(identity.schoolId);
+      setSubjectNotice(subject.is_active ? "Subject deactivated." : "Subject reactivated.");
+    } catch (error: unknown) {
+      setSubjectsError(error instanceof Error ? error.message : "Unable to update subject status.");
+    } finally { setChangingSubject(null); }
+  };
 
   const loadAcademicSettings = useCallback(async (schoolId: string) => {
     setAcademicLoading(true);
@@ -678,6 +753,38 @@ export default function Home() {
           </div>
         </section>}
 
+        {active === "Subjects" && <section className="space-y-5">
+          <div className="card p-5 md:p-6">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div><h3 className="text-lg font-bold">Subject management</h3><p className="text-sm text-slate-500 mt-1">Create and maintain the subjects offered by {identity.schoolName}.</p></div>
+              <div className="flex gap-2">
+                <button className="btn btn-light" onClick={() => void loadSubjects(identity.schoolId)} disabled={subjectsLoading}><RefreshCw size={15}/> Refresh</button>
+                {identity.role === "Admin" && <button className="btn btn-primary" onClick={() => openSubjectForm()}><Plus size={15}/> Add subject</button>}
+              </div>
+            </div>
+            {subjectsError && <div className="mt-4 rounded-xl bg-rose-50 border border-rose-100 p-3 text-sm text-rose-700">{subjectsError}</div>}
+            {subjectNotice && <div className="mt-4 rounded-xl bg-emerald-50 border border-emerald-100 p-3 text-sm text-emerald-700">{subjectNotice}</div>}
+            {showSubjectForm && <form onSubmit={saveSubject} className="mt-5 rounded-2xl border border-blue-100 bg-blue-50/50 p-4">
+              <h4 className="font-bold mb-3">{editingSubject ? "Edit subject" : "Add a subject"}</h4>
+              <div className="grid sm:grid-cols-2 gap-3">
+                <div><label className="label">Subject name *</label><input className="field" required autoFocus maxLength={100} placeholder="e.g. Mathematics" value={subjectName} onChange={e => setSubjectName(e.target.value)}/></div>
+                <div><label className="label">Short code</label><input className="field" maxLength={20} placeholder="e.g. MTH" value={subjectCode} onChange={e => setSubjectCode(e.target.value)}/></div>
+              </div>
+              <p className="text-xs text-slate-500 mt-2">Short codes are optional. Subject names and codes must be unique within this school.</p>
+              <div className="flex gap-2 mt-4"><button className="btn btn-primary" type="submit" disabled={savingSubject}>{savingSubject ? "Saving..." : editingSubject ? "Save changes" : "Add subject"}</button><button className="btn btn-light" type="button" onClick={() => setShowSubjectForm(false)}>Cancel</button></div>
+            </form>}
+          </div>
+          <div className="grid sm:grid-cols-3 gap-3">
+            <div className="card p-4"><p className="text-xs text-slate-500">Total subjects</p><p className="text-2xl font-black mt-1">{subjects.length}</p></div>
+            <div className="card p-4"><p className="text-xs text-slate-500">Active subjects</p><p className="text-2xl font-black text-emerald-600 mt-1">{subjects.filter(x => x.is_active).length}</p></div>
+            <div className="card p-4"><p className="text-xs text-slate-500">Inactive subjects</p><p className="text-2xl font-black text-slate-500 mt-1">{subjects.filter(x => !x.is_active).length}</p></div>
+          </div>
+          <div className="card p-5 md:p-6">
+            <div className="relative max-w-md"><Search size={16} className="absolute left-3 top-3 text-slate-400"/><input className="field pl-9" placeholder="Search subjects or short codes" value={subjectSearch} onChange={e => setSubjectSearch(e.target.value)}/></div>
+            {subjectsLoading ? <div className="py-10 text-center text-sm text-slate-500">Loading subjects...</div> : subjects.length === 0 ? <div className="py-12 text-center border border-dashed border-slate-200 rounded-2xl mt-4"><BookOpen size={32} className="mx-auto text-slate-300"/><h4 className="font-bold mt-3">No subjects added yet</h4><p className="text-sm text-slate-500 mt-1">Add the subjects taught at this school to prepare for teacher assignments and results.</p>{identity.role === "Admin" && <button className="btn btn-primary mt-4" onClick={() => openSubjectForm()}><Plus size={15}/> Add the first subject</button>}</div> : (() => { const filtered = subjects.filter(x => `${x.name} ${x.short_code || ""}`.toLowerCase().includes(subjectSearch.trim().toLowerCase())); return filtered.length === 0 ? <p className="text-sm text-slate-500 text-center py-8">No subjects match your search.</p> : <div className="overflow-x-auto mt-4"><table className="table w-full"><thead><tr><th>Subject</th><th>Short code</th><th>Status</th>{identity.role === "Admin" && <th>Actions</th>}</tr></thead><tbody>{filtered.map(subject => <tr key={subject.id}><td className="font-semibold">{subject.name}</td><td className="text-slate-500">{subject.short_code || "—"}</td><td><span className={`pill ${subject.is_active ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-500"}`}>{subject.is_active ? "Active" : "Inactive"}</span></td>{identity.role === "Admin" && <td><div className="flex items-center gap-1"><button className="p-2 rounded-lg text-slate-500 hover:bg-slate-100" onClick={() => openSubjectForm(subject)} aria-label={`Edit ${subject.name}`}><Pencil size={15}/></button><button className="p-2 rounded-lg text-slate-500 hover:bg-slate-100 disabled:opacity-50" disabled={changingSubject === subject.id} onClick={() => void toggleSubjectStatus(subject)} aria-label={subject.is_active ? `Deactivate ${subject.name}` : `Reactivate ${subject.name}`}>{subject.is_active ? <UserX size={15}/> : <UserCheck size={15}/>}</button></div></td>}</tr>)}</tbody></table><p className="text-xs text-slate-400 mt-3">Showing {filtered.length} of {subjects.length} subjects.</p></div>; })()}
+          </div>
+        </section>}
+
         {active === "School Settings" && <section className="space-y-5">
           <div className="card p-5 md:p-6">
             <div className="flex flex-wrap items-start justify-between gap-3">
@@ -717,7 +824,7 @@ export default function Home() {
           <div className="rounded-xl bg-blue-50 border border-blue-100 p-4 text-sm text-blue-900"><strong>How this works:</strong> Only one session is marked current. Only a term belonging to the current session can be activated. Previous sessions and their term records remain available for historical records.</div>
         </section>}
 
-        {active !== "Overview" && active !== "Classes & Students" && active !== "School Settings" && <div className="card p-6 max-w-3xl">
+        {active !== "Overview" && active !== "Classes & Students" && active !== "Subjects" && active !== "School Settings" && <div className="card p-6 max-w-3xl">
           <div className="w-11 h-11 rounded-xl bg-amber-50 text-amber-700 grid place-items-center"><AlertCircle size={20} /></div>
           <h3 className="font-bold text-lg mt-4">{active}</h3>
           <p className="text-sm text-slate-500 mt-2">This module is not connected to live database records yet. The Classes & Students module is now connected to Supabase.</p>
