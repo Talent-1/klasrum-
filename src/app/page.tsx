@@ -39,6 +39,8 @@ type StudentRecord = {
   admitted_on: string | null;
   is_active: boolean;
 };
+type AcademicSession = { id: string; school_id: string; name: string; starts_on: string | null; ends_on: string | null; is_current: boolean };
+type AcademicTerm = { id: string; school_id: string; session_id: string; term_name: string; starts_on: string | null; ends_on: string | null; status: "draft" | "open" | "published" | "closed" };
 type ClassForm = { name: string; arm: string; level_order: string };
 type StudentForm = {
   admission_number: string;
@@ -102,6 +104,18 @@ export default function Home() {
   const [studentForm, setStudentForm] = useState<StudentForm>(emptyStudentForm);
   const [savingStudent, setSavingStudent] = useState(false);
   const [savingStudentStatus, setSavingStudentStatus] = useState<string | null>(null);
+  const [academicSessions, setAcademicSessions] = useState<AcademicSession[]>([]);
+  const [academicTerms, setAcademicTerms] = useState<AcademicTerm[]>([]);
+  const [academicLoading, setAcademicLoading] = useState(false);
+  const [academicError, setAcademicError] = useState("");
+  const [showSessionForm, setShowSessionForm] = useState(false);
+  const [sessionName, setSessionName] = useState("");
+  const [sessionStarts, setSessionStarts] = useState("");
+  const [sessionEnds, setSessionEnds] = useState("");
+  const [makeCurrent, setMakeCurrent] = useState(true);
+  const [savingAcademic, setSavingAcademic] = useState(false);
+  const [termDateDrafts, setTermDateDrafts] = useState<Record<string, { starts: string; ends: string }>>({});
+  const [sessionDrafts, setSessionDrafts] = useState<Record<string, { name: string; starts: string; ends: string }>>({});
 
   const flash = useCallback((message: string) => {
     setNotice(message);
@@ -197,6 +211,116 @@ export default function Home() {
   useEffect(() => {
     if (identity?.schoolId) void loadSchoolRecords(identity.schoolId);
   }, [identity?.schoolId, loadSchoolRecords]);
+
+  const loadAcademicSettings = useCallback(async (schoolId: string) => {
+    setAcademicLoading(true);
+    setAcademicError("");
+    try {
+      const [sessionsResult, termsResult] = await Promise.all([
+        supabase.from("academic_sessions").select("id,school_id,name,starts_on,ends_on,is_current").eq("school_id", schoolId).order("starts_on", { ascending: false, nullsFirst: false }).order("name", { ascending: false }),
+        supabase.from("academic_terms").select("id,school_id,session_id,term_name,starts_on,ends_on,status").eq("school_id", schoolId),
+      ]);
+      if (sessionsResult.error) throw sessionsResult.error;
+      if (termsResult.error) throw termsResult.error;
+      const sessions = (sessionsResult.data || []) as AcademicSession[];
+      const terms = (termsResult.data || []) as AcademicTerm[];
+      setAcademicSessions(sessions);
+      setSessionDrafts(Object.fromEntries(sessions.map((session) => [session.id, { name: session.name, starts: session.starts_on || "", ends: session.ends_on || "" }])));
+      setAcademicTerms(terms);
+      setTermDateDrafts(Object.fromEntries(terms.map((term) => [term.id, { starts: term.starts_on || "", ends: term.ends_on || "" }])));
+    } catch (error: unknown) {
+      setAcademicError(error instanceof Error ? error.message : "Unable to load academic settings.");
+    } finally {
+      setAcademicLoading(false);
+    }
+  }, [supabase]);
+
+  useEffect(() => {
+    if (identity?.schoolId && active === "School Settings") void loadAcademicSettings(identity.schoolId);
+  }, [identity?.schoolId, active, loadAcademicSettings]);
+
+  const createAcademicSession = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!identity) return;
+    if (!sessionName.trim()) { setAcademicError("Enter an academic session name."); return; }
+    if (sessionStarts && sessionEnds && sessionStarts > sessionEnds) { setAcademicError("Session start date cannot be after its end date."); return; }
+    setSavingAcademic(true); setAcademicError("");
+    try {
+      const { error } = await supabase.rpc("create_academic_session", {
+        p_name: sessionName.trim(), p_starts_on: sessionStarts || null,
+        p_ends_on: sessionEnds || null, p_make_current: makeCurrent,
+      });
+      if (error) throw error;
+      setShowSessionForm(false); setSessionName(""); setSessionStarts(""); setSessionEnds(""); setMakeCurrent(true);
+      await loadAcademicSettings(identity.schoolId);
+      flash("Academic session created with First, Second and Third Terms.");
+    } catch (error: unknown) {
+      setAcademicError(error instanceof Error ? error.message : "Unable to create academic session.");
+    } finally { setSavingAcademic(false); }
+  };
+
+  const setCurrentSession = async (sessionId: string) => {
+    if (!identity) return;
+    setSavingAcademic(true); setAcademicError("");
+    try {
+      const { error } = await supabase.rpc("set_current_academic_session", { p_session_id: sessionId });
+      if (error) throw error;
+      await loadAcademicSettings(identity.schoolId);
+      flash("Current academic session updated.");
+    } catch (error: unknown) { setAcademicError(error instanceof Error ? error.message : "Unable to change current session."); }
+    finally { setSavingAcademic(false); }
+  };
+
+  const saveSessionDetails = async (session: AcademicSession) => {
+    if (!identity) return;
+    const draft = sessionDrafts[session.id] || { name: session.name, starts: session.starts_on || "", ends: session.ends_on || "" };
+    if (!draft.name.trim()) { setAcademicError("Session name is required."); return; }
+    if (draft.starts && draft.ends && draft.starts > draft.ends) { setAcademicError("Session start date cannot be after its end date."); return; }
+    setSavingAcademic(true); setAcademicError("");
+    try {
+      const { error } = await supabase.rpc("update_academic_session", {
+        p_session_id: session.id, p_name: draft.name.trim(),
+        p_starts_on: draft.starts || null, p_ends_on: draft.ends || null,
+      });
+      if (error) throw error;
+      await loadAcademicSettings(identity.schoolId);
+      flash("Academic session details saved.");
+    } catch (error: unknown) { setAcademicError(error instanceof Error ? error.message : "Unable to save session details."); }
+    finally { setSavingAcademic(false); }
+  };
+
+  const saveTermDates = async (term: AcademicTerm) => {
+    if (!identity) return;
+    const dates = termDateDrafts[term.id] || { starts: "", ends: "" };
+    if (dates.starts && dates.ends && dates.starts > dates.ends) { setAcademicError("Term start date cannot be after its closing date."); return; }
+    setSavingAcademic(true); setAcademicError("");
+    try {
+      const { error } = await supabase.rpc("update_academic_term_dates", {
+        p_term_id: term.id, p_starts_on: dates.starts || null, p_ends_on: dates.ends || null,
+      });
+      if (error) throw error;
+      await loadAcademicSettings(identity.schoolId);
+      flash(`${term.term_name} dates saved.`);
+    } catch (error: unknown) { setAcademicError(error instanceof Error ? error.message : "Unable to save term dates."); }
+    finally { setSavingAcademic(false); }
+  };
+
+  const activateTerm = async (term: AcademicTerm) => {
+    if (!identity) return;
+    let reason: string | null = null;
+    if (term.status === "closed" || term.status === "published") {
+      reason = window.prompt(`This term is ${term.status}. Enter a reason for reopening it:`)?.trim() || null;
+      if (!reason) return;
+    }
+    setSavingAcademic(true); setAcademicError("");
+    try {
+      const { error } = await supabase.rpc("activate_academic_term", { p_term_id: term.id, p_reason: reason });
+      if (error) throw error;
+      await loadAcademicSettings(identity.schoolId);
+      flash(`${term.term_name} is now the active term.`);
+    } catch (error: unknown) { setAcademicError(error instanceof Error ? error.message : "Unable to activate this term."); }
+    finally { setSavingAcademic(false); }
+  };
 
   const signOut = async () => {
     const { error } = await supabase.auth.signOut();
@@ -554,7 +678,46 @@ export default function Home() {
           </div>
         </section>}
 
-        {active !== "Overview" && active !== "Classes & Students" && <div className="card p-6 max-w-3xl">
+        {active === "School Settings" && <section className="space-y-5">
+          <div className="card p-5 md:p-6">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div><h3 className="text-lg font-bold">Academic sessions</h3><p className="text-sm text-slate-500 mt-1">Create each school year once. Klasrum automatically creates its three standard terms.</p></div>
+              <div className="flex gap-2"><button className="btn btn-light" onClick={() => identity && void loadAcademicSettings(identity.schoolId)} disabled={academicLoading || savingAcademic}><RefreshCw size={15}/> Refresh</button>{identity.role === "Admin" && <button className="btn btn-primary" onClick={() => { setShowSessionForm((v) => !v); setAcademicError(""); }}><Plus size={15}/> New session</button>}</div>
+            </div>
+            {academicError && <div className="mt-4 p-3 rounded-xl bg-rose-50 text-rose-700 text-sm">{academicError}</div>}
+            {showSessionForm && <form onSubmit={createAcademicSession} className="mt-5 rounded-2xl border border-blue-100 bg-blue-50/50 p-4">
+              <h4 className="font-bold mb-3">Create academic session</h4>
+              <div className="grid sm:grid-cols-3 gap-3">
+                <div><label className="label">Session name *</label><input className="field" required placeholder="e.g. 2026/2027" value={sessionName} onChange={(e) => setSessionName(e.target.value)}/></div>
+                <div><label className="label">Session start date</label><input className="field" type="date" value={sessionStarts} onChange={(e) => setSessionStarts(e.target.value)}/></div>
+                <div><label className="label">Session end date</label><input className="field" type="date" value={sessionEnds} onChange={(e) => setSessionEnds(e.target.value)}/></div>
+              </div>
+              <label className="flex items-center gap-2 text-sm mt-4"><input type="checkbox" checked={makeCurrent} onChange={(e) => setMakeCurrent(e.target.checked)}/> Make this the current academic session</label>
+              <p className="text-xs text-slate-500 mt-2">First Term, Second Term and Third Term will be created automatically. You can enter their dates below.</p>
+              <div className="flex gap-2 mt-4"><button className="btn btn-primary" type="submit" disabled={savingAcademic}>{savingAcademic ? "Creating..." : "Create session"}</button><button className="btn btn-light" type="button" onClick={() => setShowSessionForm(false)}>Cancel</button></div>
+            </form>}
+          </div>
+          {academicLoading ? <div className="card p-8 text-center text-sm text-slate-500">Loading academic settings...</div> : academicSessions.length === 0 ? <div className="card p-8 text-center"><School size={30} className="mx-auto text-slate-300"/><h4 className="font-bold mt-3">No academic session created</h4><p className="text-sm text-slate-500 mt-1">Create the current school year to set up its terms and begin managing results.</p>{identity.role === "Admin" && <button className="btn btn-primary mt-4" onClick={() => setShowSessionForm(true)}><Plus size={15}/> Create first session</button>}</div> : academicSessions.map((session) => {
+            const terms = ["First Term", "Second Term", "Third Term"].map((name) => academicTerms.find((term) => term.session_id === session.id && term.term_name === name)).filter(Boolean) as AcademicTerm[];
+            return <div className="card p-5 md:p-6" key={session.id}>
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="flex-1 min-w-[220px]"><div className="flex flex-wrap items-center gap-2"><h3 className="text-lg font-bold">{session.name}</h3>{session.is_current && <span className="pill bg-emerald-50 text-emerald-700">Current session</span>}</div><div className="grid sm:grid-cols-3 gap-2 mt-3"><div><label className="label">Session name</label><input className="field" value={sessionDrafts[session.id]?.name ?? session.name} disabled={identity.role !== "Admin"} onChange={(e) => setSessionDrafts((prev) => ({ ...prev, [session.id]: { name: e.target.value, starts: prev[session.id]?.starts ?? session.starts_on ?? "", ends: prev[session.id]?.ends ?? session.ends_on ?? "" } }))}/></div><div><label className="label">Starts</label><input className="field" type="date" value={sessionDrafts[session.id]?.starts ?? session.starts_on ?? ""} disabled={identity.role !== "Admin"} onChange={(e) => setSessionDrafts((prev) => ({ ...prev, [session.id]: { name: prev[session.id]?.name ?? session.name, starts: e.target.value, ends: prev[session.id]?.ends ?? session.ends_on ?? "" } }))}/></div><div><label className="label">Ends</label><input className="field" type="date" value={sessionDrafts[session.id]?.ends ?? session.ends_on ?? ""} disabled={identity.role !== "Admin"} onChange={(e) => setSessionDrafts((prev) => ({ ...prev, [session.id]: { name: prev[session.id]?.name ?? session.name, starts: prev[session.id]?.starts ?? session.starts_on ?? "", ends: e.target.value } }))}/></div></div>{identity.role === "Admin" && <button className="btn btn-light !text-xs mt-2" disabled={savingAcademic} onClick={() => void saveSessionDetails(session)}>Save session details</button>}</div>
+                {identity.role === "Admin" && !session.is_current && <button className="btn btn-light" disabled={savingAcademic} onClick={() => void setCurrentSession(session.id)}>Set as current</button>}
+              </div>
+              <div className="grid lg:grid-cols-3 gap-3 mt-5">
+                {terms.map((term) => <div key={term.id} className={`rounded-xl border p-4 ${term.status === "open" ? "border-emerald-200 bg-emerald-50/40" : "border-slate-200"}`}>
+                  <div className="flex items-center justify-between gap-2"><h4 className="font-bold text-sm">{term.term_name}</h4><span className={`pill ${term.status === "open" ? "bg-emerald-100 text-emerald-700" : term.status === "published" ? "bg-blue-50 text-blue-700" : term.status === "closed" ? "bg-slate-200 text-slate-700" : "bg-amber-50 text-amber-700"}`}>{term.status}</span></div>
+                  <div className="grid grid-cols-2 gap-2 mt-4"><div><label className="label">Starts</label><input className="field" type="date" value={termDateDrafts[term.id]?.starts ?? term.starts_on ?? ""} disabled={identity.role !== "Admin"} onChange={(e) => setTermDateDrafts((prev) => ({ ...prev, [term.id]: { starts: e.target.value, ends: prev[term.id]?.ends ?? term.ends_on ?? "" } }))}/></div><div><label className="label">Ends</label><input className="field" type="date" value={termDateDrafts[term.id]?.ends ?? term.ends_on ?? ""} disabled={identity.role !== "Admin"} onChange={(e) => setTermDateDrafts((prev) => ({ ...prev, [term.id]: { starts: prev[term.id]?.starts ?? term.starts_on ?? "", ends: e.target.value } }))}/></div></div>
+                  {identity.role === "Admin" && <div className="flex flex-wrap gap-2 mt-3"><button className="btn btn-light !text-xs" disabled={savingAcademic} onClick={() => void saveTermDates(term)}>Save dates</button>{session.is_current && term.status !== "open" && <button className="btn btn-primary !text-xs" disabled={savingAcademic} onClick={() => void activateTerm(term)}>Set active term</button>}{term.status === "open" && <span className="text-xs text-emerald-700 flex items-center gap-1"><CheckCircle2 size={14}/> Active term</span>}</div>}
+                </div>)}
+              </div>
+              {terms.length !== 3 && <p className="text-xs text-rose-600 mt-3">One or more standard term records are missing. Please contact support before using this session.</p>}
+            </div>;
+          })}
+          <div className="rounded-xl bg-blue-50 border border-blue-100 p-4 text-sm text-blue-900"><strong>How this works:</strong> Only one session is marked current. Only a term belonging to the current session can be activated. Previous sessions and their term records remain available for historical records.</div>
+        </section>}
+
+        {active !== "Overview" && active !== "Classes & Students" && active !== "School Settings" && <div className="card p-6 max-w-3xl">
           <div className="w-11 h-11 rounded-xl bg-amber-50 text-amber-700 grid place-items-center"><AlertCircle size={20} /></div>
           <h3 className="font-bold text-lg mt-4">{active}</h3>
           <p className="text-sm text-slate-500 mt-2">This module is not connected to live database records yet. The Classes & Students module is now connected to Supabase.</p>
