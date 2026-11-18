@@ -6,7 +6,7 @@ import {
   BookOpen, Users, GraduationCap, ClipboardCheck, ChartNoAxesCombined,
   Settings, Search, Bell, ChevronDown, Plus, ShieldCheck, Menu, X,
   CheckCircle2, School, LogOut, Pencil, UserPlus, RefreshCw, AlertCircle,
-  UserCheck, UserX
+  UserCheck, UserX, Eye, EyeOff, Copy
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 
@@ -29,6 +29,7 @@ type ClassRecord = {
   level_order: number | null;
 };
 type SubjectRecord = { id: string; school_id: string; name: string; short_code: string | null; is_active: boolean };
+type StaffRecord = { id: string; full_name: string; email: string | null; is_active: boolean; role: string };
 type GradingScale = { id: string; school_id: string; name: string; ca_max: number; exam_max: number; is_default: boolean };
 type GradeBandDraft = { grade: string; remark: string; min_score: string; max_score: string };
 type StudentRecord = {
@@ -58,6 +59,7 @@ const nav = [
   ["Overview", ChartNoAxesCombined],
   ["Classes & Students", Users],
   ["Subjects", BookOpen],
+  ["Staff Management", UserPlus],
   ["Grading Configuration", ChartNoAxesCombined],
   ["Teacher Assignments", GraduationCap],
   ["Attendance", ClipboardCheck],
@@ -97,6 +99,18 @@ export default function Home() {
   const [classes, setClasses] = useState<ClassRecord[]>([]);
   const [students, setStudents] = useState<StudentRecord[]>([]);
   const [subjects, setSubjects] = useState<SubjectRecord[]>([]);
+  const [staff, setStaff] = useState<StaffRecord[]>([]);
+  const [staffLoading, setStaffLoading] = useState(false);
+  const [staffError, setStaffError] = useState("");
+  const [staffNotice, setStaffNotice] = useState("");
+  const [staffSearch, setStaffSearch] = useState("");
+  const [showStaffForm, setShowStaffForm] = useState(false);
+  const [staffName, setStaffName] = useState("");
+  const [staffEmail, setStaffEmail] = useState("");
+  const [savingStaff, setSavingStaff] = useState(false);
+  const [issuedCredentials, setIssuedCredentials] = useState<{ fullName: string; email: string; password: string } | null>(null);
+  const [showIssuedPassword, setShowIssuedPassword] = useState(false);
+  const [copyNotice, setCopyNotice] = useState("");
   const [gradingScales, setGradingScales] = useState<GradingScale[]>([]);
   const [gradingBands, setGradingBands] = useState<Record<string, GradeBandDraft[]>>({});
   const [gradingLoading, setGradingLoading] = useState(false);
@@ -165,6 +179,10 @@ export default function Home() {
       if (authError) throw authError;
       if (!user) {
         router.replace("/login");
+        return;
+      }
+      if (user.app_metadata?.must_change_password === true) {
+        router.replace("/change-password");
         return;
       }
 
@@ -246,6 +264,56 @@ export default function Home() {
   useEffect(() => {
     if (identity?.schoolId) void loadSchoolRecords(identity.schoolId);
   }, [identity?.schoolId, loadSchoolRecords]);
+
+  const loadStaff = useCallback(async (schoolId: string) => {
+    setStaffLoading(true); setStaffError("");
+    try {
+      const { data, error } = await supabase.from("profiles")
+        .select("id,full_name,email,is_active,role")
+        .eq("school_id", schoolId).eq("role", "teacher")
+        .order("full_name", { ascending: true });
+      if (error) throw error;
+      setStaff((data || []) as StaffRecord[]);
+    } catch (error: unknown) {
+      setStaffError(error instanceof Error ? error.message : "Unable to load teacher accounts.");
+    } finally { setStaffLoading(false); }
+  }, [supabase]);
+
+  useEffect(() => {
+    if (identity?.schoolId && active === "Staff Management") void loadStaff(identity.schoolId);
+  }, [identity?.schoolId, active, loadStaff]);
+
+  const createTeacherAccount = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!identity || identity.role !== "Admin") return;
+    const fullName = staffName.trim();
+    const email = staffEmail.trim().toLowerCase();
+    if (!fullName || !email) { setStaffError("Enter the teacher's full name and email address."); return; }
+    setSavingStaff(true); setStaffError(""); setStaffNotice(""); setIssuedCredentials(null);
+    try {
+      const response = await fetch("/api/staff", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fullName, email }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Unable to create teacher account.");
+      setIssuedCredentials({ fullName: result.teacher.full_name, email: result.teacher.email, password: result.temporaryPassword });
+      setShowIssuedPassword(false); setStaffName(""); setStaffEmail(""); setShowStaffForm(false);
+      setStaffNotice("Teacher account created. Save or copy the temporary password now; it will not be shown again.");
+      await loadStaff(identity.schoolId);
+    } catch (error: unknown) {
+      setStaffError(error instanceof Error ? error.message : "Unable to create teacher account.");
+    } finally { setSavingStaff(false); }
+  };
+
+  const copyText = async (value: string, label: string) => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopyNotice(`${label} copied.`);
+      window.setTimeout(() => setCopyNotice(""), 2500);
+    } catch { setCopyNotice("Clipboard access was unavailable. Select and copy the text manually."); }
+  };
+
 
   const loadSubjects = useCallback(async (schoolId: string) => {
     setSubjectsLoading(true); setSubjectsError("");
@@ -820,7 +888,7 @@ export default function Home() {
               filteredStudents.length === 0 ? <div className="py-8 text-center text-sm text-slate-500">No students match this search or class filter.</div> :
               <div className="overflow-x-auto">
                 <table className="table w-full">
-                  <thead><tr><th>Student</th><th>Admission no.</th><th>Class</th><th>Gender</th><th>Status</th>{identity.role === "Admin" && <th>Actions</th>}</tr></thead>
+                  <thead><tr><th>Student</th><th>Admission no.</th><th>Class</th><th>Gender</th><th>Status</th></tr></thead>
                   <tbody>{filteredStudents.map((student) => {
                     const studentClass = classes.find((item) => item.id === student.class_id);
                     return <tr key={student.id}>
@@ -871,8 +939,39 @@ export default function Home() {
           </div>
           <div className="card p-5 md:p-6">
             <div className="relative max-w-md"><Search size={16} className="absolute left-3 top-3 text-slate-400"/><input className="field pl-9" placeholder="Search subjects or short codes" value={subjectSearch} onChange={e => setSubjectSearch(e.target.value)}/></div>
-            {subjectsLoading ? <div className="py-10 text-center text-sm text-slate-500">Loading subjects...</div> : subjects.length === 0 ? <div className="py-12 text-center border border-dashed border-slate-200 rounded-2xl mt-4"><BookOpen size={32} className="mx-auto text-slate-300"/><h4 className="font-bold mt-3">No subjects added yet</h4><p className="text-sm text-slate-500 mt-1">Add the subjects taught at this school to prepare for teacher assignments and results.</p>{identity.role === "Admin" && <button className="btn btn-primary mt-4" onClick={() => openSubjectForm()}><Plus size={15}/> Add the first subject</button>}</div> : (() => { const filtered = subjects.filter(x => `${x.name} ${x.short_code || ""}`.toLowerCase().includes(subjectSearch.trim().toLowerCase())); return filtered.length === 0 ? <p className="text-sm text-slate-500 text-center py-8">No subjects match your search.</p> : <div className="overflow-x-auto mt-4"><table className="table w-full"><thead><tr><th>Subject</th><th>Short code</th><th>Status</th>{identity.role === "Admin" && <th>Actions</th>}</tr></thead><tbody>{filtered.map(subject => <tr key={subject.id}><td className="font-semibold">{subject.name}</td><td className="text-slate-500">{subject.short_code || "—"}</td><td><span className={`pill ${subject.is_active ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-500"}`}>{subject.is_active ? "Active" : "Inactive"}</span></td>{identity.role === "Admin" && <td><div className="flex items-center gap-1"><button className="p-2 rounded-lg text-slate-500 hover:bg-slate-100" onClick={() => openSubjectForm(subject)} aria-label={`Edit ${subject.name}`}><Pencil size={15}/></button><button className="p-2 rounded-lg text-slate-500 hover:bg-slate-100 disabled:opacity-50" disabled={changingSubject === subject.id} onClick={() => void toggleSubjectStatus(subject)} aria-label={subject.is_active ? `Deactivate ${subject.name}` : `Reactivate ${subject.name}`}>{subject.is_active ? <UserX size={15}/> : <UserCheck size={15}/>}</button></div></td>}</tr>)}</tbody></table><p className="text-xs text-slate-400 mt-3">Showing {filtered.length} of {subjects.length} subjects.</p></div>; })()}
+            {subjectsLoading ? <div className="py-10 text-center text-sm text-slate-500">Loading subjects...</div> : subjects.length === 0 ? <div className="py-12 text-center border border-dashed border-slate-200 rounded-2xl mt-4"><BookOpen size={32} className="mx-auto text-slate-300"/><h4 className="font-bold mt-3">No subjects added yet</h4><p className="text-sm text-slate-500 mt-1">Add the subjects taught at this school to prepare for teacher assignments and results.</p>{identity.role === "Admin" && <button className="btn btn-primary mt-4" onClick={() => openSubjectForm()}><Plus size={15}/> Add the first subject</button>}</div> : (() => { const filtered = subjects.filter(x => `${x.name} ${x.short_code || ""}`.toLowerCase().includes(subjectSearch.trim().toLowerCase())); return filtered.length === 0 ? <p className="text-sm text-slate-500 text-center py-8">No subjects match your search.</p> : <div className="overflow-x-auto mt-4"><table className="table w-full"><thead><tr><th>Subject</th><th>Short code</th><th>Status</th></tr></thead><tbody>{filtered.map(subject => <tr key={subject.id}><td className="font-semibold">{subject.name}</td><td className="text-slate-500">{subject.short_code || "—"}</td><td><span className={`pill ${subject.is_active ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-500"}`}>{subject.is_active ? "Active" : "Inactive"}</span></td>{identity.role === "Admin" && <td><div className="flex items-center gap-1"><button className="p-2 rounded-lg text-slate-500 hover:bg-slate-100" onClick={() => openSubjectForm(subject)} aria-label={`Edit ${subject.name}`}><Pencil size={15}/></button><button className="p-2 rounded-lg text-slate-500 hover:bg-slate-100 disabled:opacity-50" disabled={changingSubject === subject.id} onClick={() => void toggleSubjectStatus(subject)} aria-label={subject.is_active ? `Deactivate ${subject.name}` : `Reactivate ${subject.name}`}>{subject.is_active ? <UserX size={15}/> : <UserCheck size={15}/>}</button></div></td>}</tr>)}</tbody></table><p className="text-xs text-slate-400 mt-3">Showing {filtered.length} of {subjects.length} subjects.</p></div>; })()}
           </div>
+        </section>}
+
+        {active === "Staff Management" && <section className="space-y-5">
+          <div className="card p-5 md:p-6">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div><h3 className="text-lg font-bold">Teacher accounts</h3><p className="text-sm text-slate-500 mt-1">Create teacher login accounts for {identity.schoolName}. Klasrum generates a unique temporary password for each teacher.</p></div>
+              <div className="flex gap-2"><button className="btn btn-light" onClick={() => void loadStaff(identity.schoolId)} disabled={staffLoading}><RefreshCw size={15}/> Refresh</button>{identity.role === "Admin" && <button className="btn btn-primary" onClick={() => { setShowStaffForm(v => !v); setStaffError(""); }}><UserPlus size={15}/> Add teacher</button>}</div>
+            </div>
+            {staffError && <div className="mt-4 rounded-xl bg-rose-50 border border-rose-100 p-3 text-sm text-rose-700">{staffError}</div>}
+            {staffNotice && <div className="mt-4 rounded-xl bg-emerald-50 border border-emerald-100 p-3 text-sm text-emerald-700 flex items-start gap-2"><CheckCircle2 size={16} className="mt-0.5 shrink-0"/>{staffNotice}</div>}
+            {showStaffForm && <form onSubmit={createTeacherAccount} className="mt-5 rounded-2xl border border-blue-100 bg-blue-50/50 p-4 space-y-3">
+              <h4 className="font-bold">Create teacher login</h4>
+              <div className="grid sm:grid-cols-2 gap-3"><div><label className="label">Teacher's full name *</label><input className="field" required maxLength={120} autoComplete="name" placeholder="e.g. John Okafor" value={staffName} onChange={e => setStaffName(e.target.value)}/></div><div><label className="label">Email address *</label><input className="field" type="email" required maxLength={254} autoComplete="email" placeholder="teacher@example.com" value={staffEmail} onChange={e => setStaffEmail(e.target.value)}/></div></div>
+              <p className="text-xs text-slate-600">A unique temporary password will be generated. It will appear once after account creation, so copy or save it securely. The teacher must change it before entering Klasrum.</p>
+              <div className="flex gap-2"><button className="btn btn-primary" type="submit" disabled={savingStaff}>{savingStaff ? "Creating account..." : "Create teacher account"}</button><button className="btn btn-light" type="button" onClick={() => setShowStaffForm(false)}>Cancel</button></div>
+            </form>}
+            {issuedCredentials && <div className="mt-5 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 space-y-3">
+              <div className="flex items-center gap-2 text-emerald-800 font-bold"><CheckCircle2 size={18}/> Teacher account created</div>
+              <div className="grid sm:grid-cols-2 gap-3 text-sm"><div><p className="text-xs text-slate-500">Teacher</p><p className="font-semibold">{issuedCredentials.fullName}</p></div><div><p className="text-xs text-slate-500">Login email</p><p className="font-semibold break-all">{issuedCredentials.email}</p></div></div>
+              <div><label className="label">Temporary password</label><div className="flex gap-2"><input className="field font-mono" readOnly type={showIssuedPassword ? "text" : "password"} value={issuedCredentials.password}/><button className="btn btn-light shrink-0" type="button" onClick={() => setShowIssuedPassword(v => !v)} aria-label={showIssuedPassword ? "Hide temporary password" : "Show temporary password"}>{showIssuedPassword ? <EyeOff size={17}/> : <Eye size={17}/>}</button><button className="btn btn-light shrink-0" type="button" onClick={() => void copyText(issuedCredentials.password, "Temporary password")} aria-label="Copy temporary password"><Copy size={17}/></button></div></div>
+              <button className="btn btn-primary" type="button" onClick={() => void copyText(`Klasrum teacher login\nName: ${issuedCredentials.fullName}\nEmail: ${issuedCredentials.email}\nTemporary password: ${issuedCredentials.password}\n\nYou must change this password the first time you sign in.`, "Login details")}><Copy size={15}/> Copy all login details</button>
+              {copyNotice && <p className="text-xs text-emerald-800">{copyNotice}</p>}
+              <p className="text-xs text-emerald-900">For security, this temporary password is displayed only once. If it is lost, create a password-reset flow rather than trying to retrieve it.</p>
+              <button type="button" className="text-xs underline text-emerald-800" onClick={() => setIssuedCredentials(null)}>Close credentials</button>
+            </div>}
+          </div>
+          <div className="grid sm:grid-cols-3 gap-3"><div className="card p-4"><p className="text-xs text-slate-500">Total teacher accounts</p><p className="text-2xl font-black mt-1">{staff.length}</p></div><div className="card p-4"><p className="text-xs text-slate-500">Active teachers</p><p className="text-2xl font-black text-emerald-600 mt-1">{staff.filter(t => t.is_active).length}</p></div><div className="card p-4"><p className="text-xs text-slate-500">Inactive teachers</p><p className="text-2xl font-black text-slate-500 mt-1">{staff.filter(t => !t.is_active).length}</p></div></div>
+          <div className="card p-5 md:p-6"><div className="relative max-w-md"><Search size={16} className="absolute left-3 top-3 text-slate-400"/><input className="field pl-9" placeholder="Search teachers by name or email" value={staffSearch} onChange={e => setStaffSearch(e.target.value)}/></div>
+            {staffLoading ? <div className="py-10 text-center text-sm text-slate-500">Loading teacher accounts...</div> : staff.length === 0 ? <div className="py-12 text-center border border-dashed border-slate-200 rounded-2xl mt-4"><Users size={32} className="mx-auto text-slate-300"/><h4 className="font-bold mt-3">No teacher accounts yet</h4><p className="text-sm text-slate-500 mt-1">Create teacher accounts here. You can assign their classes and subjects after account creation.</p>{identity.role === "Admin" && <button className="btn btn-primary mt-4" onClick={() => setShowStaffForm(true)}><UserPlus size={15}/> Create first teacher account</button>}</div> : (() => { const filtered = staff.filter(t => `${t.full_name} ${t.email || ""}`.toLowerCase().includes(staffSearch.trim().toLowerCase())); return filtered.length === 0 ? <p className="text-sm text-slate-500 text-center py-8">No teachers match your search.</p> : <div className="overflow-x-auto mt-4"><table className="table w-full"><thead><tr><th>Teacher</th><th>Email / login</th><th>Status</th></tr></thead><tbody>{filtered.map(teacher => <tr key={teacher.id}><td className="font-semibold">{teacher.full_name}</td><td className="text-slate-500 break-all">{teacher.email || "—"}</td><td><span className={`pill ${teacher.is_active ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-500"}`}>{teacher.is_active ? "Active" : "Inactive"}</span></td></tr>)}</tbody></table><p className="text-xs text-slate-400 mt-3">Showing {filtered.length} of {staff.length} teacher accounts.</p></div>; })()}
+          </div>
+          <div className="rounded-xl bg-blue-50 border border-blue-100 p-4 text-sm text-blue-900"><strong>Account security:</strong> Temporary passwords are unique, generated on the trusted server, and never stored in the school database. Teachers are forced to choose a new password on first login. Share credentials privately.</div>
         </section>}
 
         {active === "Grading Configuration" && <section className="space-y-5">
@@ -949,7 +1048,7 @@ export default function Home() {
           <div className="rounded-xl bg-blue-50 border border-blue-100 p-4 text-sm text-blue-900"><strong>How this works:</strong> Only one session is marked current. Only a term belonging to the current session can be activated. Previous sessions and their term records remain available for historical records.</div>
         </section>}
 
-        {active !== "Overview" && active !== "Classes & Students" && active !== "Subjects" && active !== "Grading Configuration" && active !== "School Settings" && <div className="card p-6 max-w-3xl">
+        {active !== "Overview" && active !== "Classes & Students" && active !== "Subjects" && active !== "Staff Management" && active !== "Grading Configuration" && active !== "School Settings" && <div className="card p-6 max-w-3xl">
           <div className="w-11 h-11 rounded-xl bg-amber-50 text-amber-700 grid place-items-center"><AlertCircle size={20} /></div>
           <h3 className="font-bold text-lg mt-4">{active}</h3>
           <p className="text-sm text-slate-500 mt-2">This module is not connected to live database records yet. The Classes & Students module is now connected to Supabase.</p>
