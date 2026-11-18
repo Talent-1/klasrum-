@@ -13,13 +13,21 @@ async function getAuthenticatedClient() {
     {
       cookies: {
         getAll() { return cookieStore.getAll(); },
-        setAll(cookiesToSet) {
-          try {
-            cookiesToSet.forEach(({ name, value, options }) => cookieStore.set(name, value, options));
-          } catch {
-            // Cookie writes can be unavailable in a Server Component render.
-          }
-        },
+        setAll(
+  cookiesToSet: {
+    name: string;
+    value: string;
+    options?: Parameters<typeof cookieStore.set>[2];
+  }[]
+) {
+  try {
+    cookiesToSet.forEach(({ name, value, options }) => {
+      cookieStore.set(name, value, options);
+    });
+  } catch {
+    // The cookie update can be ignored in Server Components.
+  }
+},
       },
     },
   );
