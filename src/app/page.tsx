@@ -29,6 +29,8 @@ type ClassRecord = {
   level_order: number | null;
 };
 type SubjectRecord = { id: string; school_id: string; name: string; short_code: string | null; is_active: boolean };
+type GradingScale = { id: string; school_id: string; name: string; ca_max: number; exam_max: number; is_default: boolean };
+type GradeBandDraft = { grade: string; remark: string; min_score: string; max_score: string };
 type StudentRecord = {
   id: string;
   school_id: string;
@@ -56,6 +58,7 @@ const nav = [
   ["Overview", ChartNoAxesCombined],
   ["Classes & Students", Users],
   ["Subjects", BookOpen],
+  ["Grading Configuration", ChartNoAxesCombined],
   ["Teacher Assignments", GraduationCap],
   ["Attendance", ClipboardCheck],
   ["Results & Publishing", BookOpen],
@@ -94,6 +97,25 @@ export default function Home() {
   const [classes, setClasses] = useState<ClassRecord[]>([]);
   const [students, setStudents] = useState<StudentRecord[]>([]);
   const [subjects, setSubjects] = useState<SubjectRecord[]>([]);
+  const [gradingScales, setGradingScales] = useState<GradingScale[]>([]);
+  const [gradingBands, setGradingBands] = useState<Record<string, GradeBandDraft[]>>({});
+  const [gradingLoading, setGradingLoading] = useState(false);
+  const [gradingError, setGradingError] = useState("");
+  const [gradingNotice, setGradingNotice] = useState("");
+  const [showGradingForm, setShowGradingForm] = useState(false);
+  const [gradingName, setGradingName] = useState("Standard 100-point scale");
+  const [caMaximum, setCaMaximum] = useState("30");
+  const [examMaximum, setExamMaximum] = useState("70");
+  const [makeGradingDefault, setMakeGradingDefault] = useState(true);
+  const [gradeBandDrafts, setGradeBandDrafts] = useState<GradeBandDraft[]>([
+    { grade: "F", remark: "Fail", min_score: "0", max_score: "45" },
+    { grade: "E", remark: "Pass", min_score: "45", max_score: "50" },
+    { grade: "D", remark: "Fair", min_score: "50", max_score: "60" },
+    { grade: "C", remark: "Good", min_score: "60", max_score: "70" },
+    { grade: "B", remark: "Very Good", min_score: "70", max_score: "75" },
+    { grade: "A", remark: "Excellent", min_score: "75", max_score: "100" },
+  ]);
+  const [savingGrading, setSavingGrading] = useState(false);
   const [subjectsLoading, setSubjectsLoading] = useState(false);
   const [subjectsError, setSubjectsError] = useState("");
   const [subjectNotice, setSubjectNotice] = useState("");
@@ -285,6 +307,74 @@ export default function Home() {
     } catch (error: unknown) {
       setSubjectsError(error instanceof Error ? error.message : "Unable to update subject status.");
     } finally { setChangingSubject(null); }
+  };
+
+  const loadGradingSettings = useCallback(async (schoolId: string) => {
+    setGradingLoading(true); setGradingError("");
+    try {
+      const { data: scales, error: scalesError } = await supabase.from("grading_scales")
+        .select("id,school_id,name,ca_max,exam_max,is_default")
+        .eq("school_id", schoolId).order("created_at", { ascending: true });
+      if (scalesError) throw scalesError;
+      const rows = (scales || []) as GradingScale[];
+      setGradingScales(rows);
+      if (rows.length) {
+        const { data: bands, error: bandsError } = await supabase.from("grade_bands")
+          .select("id,school_id,grading_scale_id,grade,remark,min_score,max_score")
+          .eq("school_id", schoolId).order("min_score", { ascending: true });
+        if (bandsError) throw bandsError;
+        const grouped: Record<string, GradeBandDraft[]> = {};
+        for (const band of bands || []) {
+          const key = String(band.grading_scale_id);
+          (grouped[key] ||= []).push({ grade: String(band.grade), remark: String(band.remark || ""), min_score: String(band.min_score), max_score: String(band.max_score) });
+        }
+        setGradingBands(grouped);
+      } else setGradingBands({});
+    } catch (error: unknown) {
+      setGradingError(error instanceof Error ? error.message : "Unable to load grading configuration.");
+    } finally { setGradingLoading(false); }
+  }, [supabase]);
+
+  useEffect(() => {
+    if (identity?.schoolId && active === "Grading Configuration") void loadGradingSettings(identity.schoolId);
+  }, [identity?.schoolId, active, loadGradingSettings]);
+
+  const updateGradeBand = (index: number, field: keyof GradeBandDraft, value: string) => {
+    setGradeBandDrafts((current) => current.map((band, i) => i === index ? { ...band, [field]: value } : band));
+  };
+
+  const addGradeBand = () => setGradeBandDrafts((current) => [...current, { grade: "", remark: "", min_score: "", max_score: "" }]);
+  const removeGradeBand = (index: number) => setGradeBandDrafts((current) => current.filter((_, i) => i !== index));
+
+  const createGradingScale = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!identity || identity.role !== "Admin") return;
+    const ca = Number(caMaximum), exam = Number(examMaximum), total = ca + exam;
+    if (!gradingName.trim()) { setGradingError("Enter a name for this grading scale."); return; }
+    if (!Number.isFinite(ca) || !Number.isFinite(exam) || ca <= 0 || exam <= 0) { setGradingError("CA and examination maximum scores must both be greater than zero."); return; }
+    if (gradeBandDrafts.length < 2) { setGradingError("Add at least two grade bands."); return; }
+    const bands = gradeBandDrafts.map((band) => ({ grade: band.grade.trim(), remark: band.remark.trim(), min_score: Number(band.min_score), max_score: Number(band.max_score) }));
+    if (bands.some((band) => !band.grade || !band.remark || !Number.isFinite(band.min_score) || !Number.isFinite(band.max_score))) { setGradingError("Complete every grade, remark, minimum and maximum score."); return; }
+    const ordered = [...bands].sort((a, b) => a.min_score - b.min_score);
+    if (ordered[0].min_score !== 0 || ordered[ordered.length - 1].max_score !== total) { setGradingError(`Grade bands must begin at 0 and end at ${total} (CA + examination maximum).`); return; }
+    for (let i = 0; i < ordered.length; i++) {
+      if (ordered[i].min_score < 0 || ordered[i].max_score <= ordered[i].min_score || ordered[i].max_score > total) { setGradingError("Each band must have a valid range within the total score."); return; }
+      if (i > 0 && ordered[i - 1].max_score !== ordered[i].min_score) { setGradingError("Grade bands must be continuous: no gaps or overlaps are allowed."); return; }
+    }
+    if (new Set(bands.map((band) => band.grade.toUpperCase())).size !== bands.length) { setGradingError("Each grade label must be unique."); return; }
+    setSavingGrading(true); setGradingError(""); setGradingNotice("");
+    try {
+      const { error } = await supabase.rpc("create_grading_scale", {
+        p_name: gradingName.trim(), p_ca_max: ca, p_exam_max: exam,
+        p_bands: ordered, p_make_default: makeGradingDefault || gradingScales.length === 0,
+      });
+      if (error) throw error;
+      setShowGradingForm(false);
+      setGradingNotice("Grading scale created successfully. It is ready for use in result calculations.");
+      await loadGradingSettings(identity.schoolId);
+    } catch (error: unknown) {
+      setGradingError(error instanceof Error ? error.message : "Unable to create grading scale.");
+    } finally { setSavingGrading(false); }
   };
 
   const loadAcademicSettings = useCallback(async (schoolId: string) => {
@@ -785,6 +875,41 @@ export default function Home() {
           </div>
         </section>}
 
+        {active === "Grading Configuration" && <section className="space-y-5">
+          <div className="card p-5 md:p-6">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div><h3 className="text-lg font-bold">Grading scales</h3><p className="text-sm text-slate-500 mt-1">Set assessment maximums and the grade/remark ranges used by Klasrum when calculating results.</p></div>
+              <div className="flex gap-2"><button className="btn btn-light" onClick={() => identity && void loadGradingSettings(identity.schoolId)} disabled={gradingLoading || savingGrading}><RefreshCw size={15}/> Refresh</button>{identity.role === "Admin" && <button className="btn btn-primary" onClick={() => { setShowGradingForm((v) => !v); setGradingError(""); }}><Plus size={15}/> New grading scale</button>}</div>
+            </div>
+            {gradingError && <div className="mt-4 p-3 rounded-xl bg-rose-50 text-rose-700 text-sm">{gradingError}</div>}
+            {gradingNotice && <div className="mt-4 p-3 rounded-xl bg-emerald-50 text-emerald-700 text-sm flex items-center gap-2"><CheckCircle2 size={16}/>{gradingNotice}</div>}
+            {showGradingForm && <form onSubmit={createGradingScale} className="mt-5 rounded-2xl border border-blue-100 bg-blue-50/40 p-4 space-y-4">
+              <div><h4 className="font-bold">Create grading scale</h4><p className="text-xs text-slate-500 mt-1">The ranges must cover every possible score from zero to the combined CA and examination maximum, without gaps or overlaps.</p></div>
+              <div className="grid sm:grid-cols-3 gap-3">
+                <div><label className="label">Scale name *</label><input className="field" required value={gradingName} onChange={(e) => setGradingName(e.target.value)} placeholder="e.g. Standard 100-point scale"/></div>
+                <div><label className="label">CA maximum *</label><input className="field" type="number" min="0.01" step="0.01" required value={caMaximum} onChange={(e) => setCaMaximum(e.target.value)}/></div>
+                <div><label className="label">Examination maximum *</label><input className="field" type="number" min="0.01" step="0.01" required value={examMaximum} onChange={(e) => setExamMaximum(e.target.value)}/></div>
+              </div>
+              <div className="flex flex-wrap items-center justify-between gap-2"><div><h5 className="font-semibold text-sm">Grade bands</h5><p className="text-xs text-slate-500">Use adjacent ranges, e.g. 0–45, 45–50, 50–60.</p></div><button type="button" className="btn btn-light !text-xs" onClick={addGradeBand}><Plus size={14}/> Add band</button></div>
+              <div className="space-y-2">{gradeBandDrafts.map((band, index) => <div key={index} className="grid grid-cols-2 sm:grid-cols-[1fr_1.5fr_1fr_1fr_auto] gap-2 items-end rounded-xl bg-white border border-slate-200 p-3">
+                <div><label className="label">Grade</label><input className="field" required value={band.grade} onChange={(e) => updateGradeBand(index, "grade", e.target.value)} placeholder="A"/></div>
+                <div><label className="label">Remark</label><input className="field" required value={band.remark} onChange={(e) => updateGradeBand(index, "remark", e.target.value)} placeholder="Excellent"/></div>
+                <div><label className="label">Minimum</label><input className="field" type="number" step="0.01" required value={band.min_score} onChange={(e) => updateGradeBand(index, "min_score", e.target.value)}/></div>
+                <div><label className="label">Maximum</label><input className="field" type="number" step="0.01" required value={band.max_score} onChange={(e) => updateGradeBand(index, "max_score", e.target.value)}/></div>
+                <button type="button" className="p-2 text-rose-600 hover:bg-rose-50 rounded-lg" onClick={() => removeGradeBand(index)} aria-label={`Remove grade band ${band.grade || index + 1}`}><X size={16}/></button>
+              </div>)}</div>
+              <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={makeGradingDefault} onChange={(e) => setMakeGradingDefault(e.target.checked)}/> Make this the school's default grading scale</label>
+              <div className="flex flex-wrap gap-2"><button className="btn btn-primary" type="submit" disabled={savingGrading}>{savingGrading ? "Saving scale..." : "Save grading scale"}</button><button className="btn btn-light" type="button" onClick={() => setShowGradingForm(false)}>Cancel</button></div>
+            </form>}
+          </div>
+          {gradingLoading ? <div className="card p-8 text-center text-sm text-slate-500">Loading grading scales...</div> : gradingScales.length === 0 ? <div className="card p-8 text-center"><ChartNoAxesCombined size={30} className="mx-auto text-slate-300"/><h4 className="font-bold mt-3">No grading scale configured</h4><p className="text-sm text-slate-500 mt-1">Create the school's first grading scale before entering or calculating student results.</p>{identity.role === "Admin" && <button className="btn btn-primary mt-4" onClick={() => setShowGradingForm(true)}><Plus size={15}/> Create first grading scale</button>}</div> : <div className="grid xl:grid-cols-2 gap-4">{gradingScales.map((scale) => <div className="card p-5" key={scale.id}>
+            <div className="flex flex-wrap items-start justify-between gap-2"><div><h4 className="font-bold">{scale.name}</h4><p className="text-xs text-slate-500 mt-1">CA: {scale.ca_max} · Examination: {scale.exam_max} · Total: {Number(scale.ca_max) + Number(scale.exam_max)}</p></div>{scale.is_default && <span className="pill bg-emerald-50 text-emerald-700">Default scale</span>}</div>
+            <div className="overflow-x-auto mt-4"><table className="w-full text-sm"><thead><tr className="text-xs text-slate-400 border-b"><th className="text-left py-2">Grade</th><th className="text-left py-2">Remark</th><th className="text-right py-2">Score range</th></tr></thead><tbody>{(gradingBands[scale.id] || []).map((band) => <tr className="border-b border-slate-100 last:border-0" key={band.grade}><td className="py-2 font-bold">{band.grade}</td><td className="py-2 text-slate-600">{band.remark}</td><td className="py-2 text-right tabular-nums">{band.min_score} – {band.max_score}</td></tr>)}</tbody></table></div>
+            <p className="text-[11px] text-slate-400 mt-3">{(gradingBands[scale.id] || []).length} grade bands · {scale.is_default ? "Used as the default for new score entries" : "Available for historical/configured result workflows"}</p>
+          </div>)}</div>}
+          <div className="rounded-xl bg-amber-50 border border-amber-100 p-4 text-sm text-amber-900"><strong>Important:</strong> Once a grading scale has been used to record scores, the database protects it from modification so previously calculated results cannot silently change. Create a new scale when your school needs a different grading structure.</div>
+        </section>}
+
         {active === "School Settings" && <section className="space-y-5">
           <div className="card p-5 md:p-6">
             <div className="flex flex-wrap items-start justify-between gap-3">
@@ -824,7 +949,7 @@ export default function Home() {
           <div className="rounded-xl bg-blue-50 border border-blue-100 p-4 text-sm text-blue-900"><strong>How this works:</strong> Only one session is marked current. Only a term belonging to the current session can be activated. Previous sessions and their term records remain available for historical records.</div>
         </section>}
 
-        {active !== "Overview" && active !== "Classes & Students" && active !== "Subjects" && active !== "School Settings" && <div className="card p-6 max-w-3xl">
+        {active !== "Overview" && active !== "Classes & Students" && active !== "Subjects" && active !== "Grading Configuration" && active !== "School Settings" && <div className="card p-6 max-w-3xl">
           <div className="w-11 h-11 rounded-xl bg-amber-50 text-amber-700 grid place-items-center"><AlertCircle size={20} /></div>
           <h3 className="font-bold text-lg mt-4">{active}</h3>
           <p className="text-sm text-slate-500 mt-2">This module is not connected to live database records yet. The Classes & Students module is now connected to Supabase.</p>
