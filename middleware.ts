@@ -42,7 +42,29 @@ export async function middleware(request: NextRequest) {
     }
   );
 
-  await supabase.auth.getUser();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  const pathname = request.nextUrl.pathname;
+
+  // Protect the dashboard.
+  if (pathname.startsWith("/dashboard") && !user) {
+    const loginUrl = request.nextUrl.clone();
+    loginUrl.pathname = "/login";
+    loginUrl.searchParams.set("next", pathname);
+
+    return NextResponse.redirect(loginUrl);
+  }
+
+  // Signed-in users should not remain on the login page.
+  if (pathname === "/login" && user) {
+    const dashboardUrl = request.nextUrl.clone();
+    dashboardUrl.pathname = "/dashboard";
+    dashboardUrl.search = "";
+
+    return NextResponse.redirect(dashboardUrl);
+  }
 
   return response;
 }
