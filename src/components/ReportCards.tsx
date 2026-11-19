@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertCircle, FileText, Printer, RefreshCw, School } from "lucide-react";
+import { AlertCircle, Download, FileText, Printer, RefreshCw } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 
 type Props = { schoolId: string; adminId: string; schoolName: string; logoUrl: string | null; principalName: string };
@@ -45,6 +45,7 @@ export default function ReportCards({ schoolId, adminId, schoolName, logoUrl, pr
   const [principalDraft, setPrincipalDraft] = useState("");
   const [savingPrincipal, setSavingPrincipal] = useState(false);
   const [principalNotice, setPrincipalNotice] = useState("");
+  const [printingAll, setPrintingAll] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -147,29 +148,132 @@ export default function ReportCards({ schoolId, adminId, schoolName, logoUrl, pr
     } catch (e) { setError(e instanceof Error ? e.message : "Unable to save school details. Confirm migration 003 has been applied."); }
     finally { setSchoolSaving(false); }
   };
-  const printReport = () => { if (!currentStudent) return; window.print(); };
+
+  const printReport = () => {
+    if (!currentStudent) return;
+    setPrintingAll(false);
+    window.setTimeout(() => window.print(), 100);
+  };
+
+  const printAllReports = () => {
+    if (!students.length) return;
+    setPrintingAll(true);
+    window.setTimeout(() => window.print(), 150);
+  };
+
+  useEffect(() => {
+    const finishPrint = () => setPrintingAll(false);
+    window.addEventListener("afterprint", finishPrint);
+    return () => window.removeEventListener("afterprint", finishPrint);
+  }, []);
+
+  const renderReportCard = (student: ReportStudent) => (
+    <article key={student.id} className="bg-white border border-slate-200 shadow-sm rounded-xl p-5 md:p-8 max-w-[900px] mx-auto text-slate-900 report-page">
+      <header className="text-center border-b-2 border-slate-800 pb-4"><div className="flex items-center justify-center gap-4">{logoUrl ? <img src={logoUrl} alt="School logo" className="w-16 h-16 object-contain"/> : <div className="w-16 h-16 rounded-full border-2 border-slate-700 grid place-items-center font-black text-lg">{initials(schoolName)}</div>}<div><h1 className="text-2xl font-black uppercase tracking-wide">{schoolName}</h1><p className="text-xs mt-1">{schoolAddress || "School address not yet configured"}{schoolPhone ? ` · ${schoolPhone}` : ""}{schoolEmail ? ` · ${schoolEmail}` : ""}</p><p className="text-sm font-bold mt-2 tracking-[.2em]">STUDENT TERMINAL REPORT</p></div></div></header>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-5 gap-y-2 text-xs border-b border-slate-300 py-4"><div><b>Student:</b> {student.full_name}</div><div><b>Admission No:</b> {student.admission_number}</div><div><b>Class:</b> {selectedClass?.name} {selectedClass?.arm}</div><div><b>Gender:</b> {student.gender || "—"}</div><div><b>Session:</b> {selectedSession?.name || "—"}</div><div><b>Term:</b> {selectedTerm?.term_name || "—"}</div><div><b>Form Teacher:</b> {formTeacher}</div><div><b>Class Size:</b> {students.length}</div></div>
+      <h3 className="font-bold text-sm mt-4 mb-2">Academic Performance</h3><table className="w-full text-xs border-collapse"><thead><tr className="bg-slate-100"><th className="border border-slate-400 p-2 text-left">Subject</th><th className="border border-slate-400 p-2">CA</th><th className="border border-slate-400 p-2">Exam</th><th className="border border-slate-400 p-2">Total</th><th className="border border-slate-400 p-2">Grade</th><th className="border border-slate-400 p-2">Remark</th></tr></thead><tbody>{subjects.map((sub) => { const sc = student.scores[sub.id]; return <tr key={sub.id}><td className="border border-slate-400 p-2">{sub.name}</td><td className="border border-slate-400 p-2 text-center">{sc ? fmt(Number(sc.ca_score)) : "—"}</td><td className="border border-slate-400 p-2 text-center">{sc ? fmt(Number(sc.exam_score)) : "—"}</td><td className="border border-slate-400 p-2 text-center font-bold">{sc ? fmt(Number(sc.subject_total)) : "—"}</td><td className="border border-slate-400 p-2 text-center">{sc?.subject_grade || "—"}</td><td className="border border-slate-400 p-2">{getRemark(sc)}</td></tr>; })}</tbody></table>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-3 text-xs"><div className="border border-slate-400 p-2"><b>Aggregate Total</b><div className="text-lg font-black">{fmt(student.overall)}</div></div><div className="border border-slate-400 p-2"><b>Average</b><div className="text-lg font-black">{fmt(student.average)}%</div></div><div className="border border-slate-400 p-2"><b>Class Position</b><div className="text-lg font-black">{ordinal(student.position)}</div></div><div className="border border-slate-400 p-2"><b>Subjects Offered</b><div className="text-lg font-black">{subjects.length}</div></div></div>
+      <div className="grid sm:grid-cols-2 gap-4 mt-4 text-xs"><div className="border border-slate-300 p-3"><b>Attendance</b><div className="grid grid-cols-3 gap-2 mt-2"><span>School days: {classDays || "—"}</span><span>Present: {student.present}</span><span>Absent: {student.absent}</span></div></div><div className="border border-slate-300 p-3"><b>Affective / Psychomotor Traits</b><div className="grid grid-cols-2 gap-1 mt-2">{Object.entries(student.conduct || {}).length ? Object.entries(student.conduct).map(([k,v]) => <span key={k}>{k.replaceAll("_", " ")}: <b>{String(v)}</b></span>) : <span className="text-slate-500">Not yet assessed</span>}</div></div></div>
+      <div className="mt-4 grid sm:grid-cols-2 gap-4 text-xs"><div className="border border-slate-300 p-3 min-h-20"><b>Form Teacher's Comment</b><p className="mt-2 whitespace-pre-wrap">{student.formComment || "No form-teacher comment recorded."}</p><p className="mt-4">Name: {formTeacher}</p></div><div className="border border-slate-300 p-3 min-h-20"><b>Principal's Comment</b><p className="mt-2 whitespace-pre-wrap">{student.principalComment || "No principal's comment recorded."}</p><p className="mt-4">Name: {schoolPrincipal || principalName || "School Administrator"}</p></div></div>
+      <div className="grid grid-cols-2 gap-10 mt-8 text-xs"><div className="border-t border-slate-500 pt-2">Form Teacher's Signature</div><div className="border-t border-slate-500 pt-2">Principal's Signature / School Stamp</div></div><p className="text-[10px] text-center text-slate-500 mt-6">Generated by Klasrum · {new Date().toLocaleDateString()}</p>
+    </article>
+  );
 
   return <section className="space-y-5">
-    <style jsx global>{`@media print { body * { visibility:hidden !important; } #klasrum-report-print, #klasrum-report-print * { visibility:visible !important; } #klasrum-report-print { position:absolute; inset:0; width:100%; margin:0; padding:12mm; background:#fff; } .no-print { display:none !important; } .report-page { page-break-after:always; break-after:page; } @page { size:A4 portrait; margin:0; } }`}</style>
-    <div className="card p-5 no-print"><div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-xl font-black">Terminal report cards</h2><p className="text-sm text-slate-500 mt-1">Automatically populated from My Teaching scores, the class broadsheet and saved comments.</p></div><button className="btn btn-light" onClick={() => void loadReports()} disabled={loading}><RefreshCw size={15} className={loading ? "animate-spin" : ""}/> Refresh data</button></div>
-      <div className="grid sm:grid-cols-3 gap-3 mt-4"><div><label className="label">Class</label><select className="field" value={classId} onChange={(e) => setClassId(e.target.value)}>{classes.map((c) => <option key={c.id} value={c.id}>{c.name}{c.arm ? ` ${c.arm}` : ""}</option>)}</select></div><div><label className="label">Academic session</label><select className="field" value={sessionId} onChange={(e) => { setSessionId(e.target.value); setTermId(terms.find((t) => t.session_id === e.target.value)?.id || ""); }}>{sessions.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select></div><div><label className="label">Term</label><select className="field" value={termId} onChange={(e) => setTermId(e.target.value)}>{terms.filter((t) => t.session_id === sessionId).map((t) => <option key={t.id} value={t.id}>{t.term_name} · {t.status}</option>)}</select></div></div>
+    <style jsx global>{`
+      @media screen { #klasrum-report-print .report-page { margin-bottom: 1.5rem; } }
+      @media print {
+        html, body { margin: 0 !important; padding: 0 !important; background: #fff !important; }
+        body * { visibility: hidden !important; }
+        #klasrum-report-print, #klasrum-report-print * { visibility: visible !important; }
+        #klasrum-report-print {
+          position: absolute !important;
+          left: 0 !important;
+          top: 0 !important;
+          width: 210mm !important;
+          margin: 0 !important;
+          padding: 0 !important;
+          background: #fff !important;
+        }
+        #klasrum-report-print .report-page {
+          box-sizing: border-box !important;
+          width: 210mm !important;
+          min-height: 297mm !important;
+          max-width: none !important;
+          margin: 0 !important;
+          padding: 12mm !important;
+          border: 0 !important;
+          border-radius: 0 !important;
+          box-shadow: none !important;
+          break-inside: avoid !important;
+          page-break-inside: avoid !important;
+          break-after: page !important;
+          page-break-after: always !important;
+        }
+        #klasrum-report-print .report-page:last-child {
+          break-after: auto !important;
+          page-break-after: auto !important;
+        }
+        .no-print { display: none !important; }
+        @page { size: A4 portrait; margin: 0; }
+      }
+    `}</style>
+
+    <div className="card p-5 no-print">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="text-xl font-black">Terminal report cards</h2>
+          <p className="text-sm text-slate-500 mt-1">Automatically populated from My Teaching scores, the class broadsheet and saved comments.</p>
+        </div>
+        <button className="btn btn-light" onClick={() => void loadReports()} disabled={loading}>
+          <RefreshCw size={15} className={loading ? "animate-spin" : ""}/> Refresh data
+        </button>
+      </div>
+
+      <div className="grid sm:grid-cols-3 gap-3 mt-4">
+        <div><label className="label">Class</label><select className="field" value={classId} onChange={(e) => setClassId(e.target.value)}>{classes.map((c) => <option key={c.id} value={c.id}>{c.name}{c.arm ? ` ${c.arm}` : ""}</option>)}</select></div>
+        <div><label className="label">Academic session</label><select className="field" value={sessionId} onChange={(e) => { setSessionId(e.target.value); setTermId(terms.find((t) => t.session_id === e.target.value)?.id || ""); }}>{sessions.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select></div>
+        <div><label className="label">Term</label><select className="field" value={termId} onChange={(e) => setTermId(e.target.value)}>{terms.filter((t) => t.session_id === sessionId).map((t) => <option key={t.id} value={t.id}>{t.term_name} · {t.status}</option>)}</select></div>
+      </div>
+
       {error && <div className="mt-4 p-3 rounded-xl bg-rose-50 text-rose-700 text-sm flex gap-2"><AlertCircle size={16}/>{error}</div>}
-      <div className="mt-4 flex flex-wrap items-center gap-2"><span className="text-xs text-slate-500">{students.length} active students · {subjects.length} subjects · Form teacher: {formTeacher}</span><span className="ml-auto"/><button className="btn btn-primary" onClick={printReport} disabled={!currentStudent}><Printer size={15}/> Print / Save selected PDF</button></div>
-      <div className="mt-4 border-t border-slate-100 pt-4"><h4 className="font-semibold text-sm">School details printed on the report card</h4><div className="grid sm:grid-cols-2 gap-3 mt-3"><div><label className="label">School address</label><input className="field" value={schoolAddress} onChange={(e) => setSchoolAddress(e.target.value)} placeholder="School address"/></div><div><label className="label">School phone</label><input className="field" value={schoolPhone} onChange={(e) => setSchoolPhone(e.target.value)} placeholder="Phone number"/></div><div><label className="label">School email</label><input className="field" type="email" value={schoolEmail} onChange={(e) => setSchoolEmail(e.target.value)} placeholder="School email"/></div><div><label className="label">Principal's name</label><input className="field" value={schoolPrincipal} onChange={(e) => setSchoolPrincipal(e.target.value)} placeholder="Principal / Head of School"/></div></div><button className="btn btn-light mt-3" onClick={() => void saveSchoolDetails()} disabled={schoolSaving}>{schoolSaving ? "Saving..." : "Save school details"}</button></div>
-      {currentStudent && <div className="mt-4 grid sm:grid-cols-[1fr_auto] gap-2 items-end"><div><label className="label">Principal's comment for {currentStudent.full_name}</label><textarea className="field min-h-20" maxLength={1000} value={principalDraft} onChange={(e) => setPrincipalDraft(e.target.value)} placeholder="Enter principal's comment" /></div><button className="btn btn-light" onClick={() => void savePrincipalComment()} disabled={savingPrincipal}>{savingPrincipal ? "Saving..." : "Save principal comment"}</button></div>}
+
+      <div className="mt-4 flex flex-wrap items-center gap-2">
+        <span className="text-xs text-slate-500">{students.length} active students · {subjects.length} subjects · Form teacher: {formTeacher}</span>
+        <span className="ml-auto"/>
+        <button className="btn btn-light" onClick={printReport} disabled={!currentStudent || loading}><Printer size={15}/> Print selected PDF</button>
+        <button className="btn btn-primary" onClick={printAllReports} disabled={!students.length || loading}><Download size={15}/> Download all class reports (PDF)</button>
+      </div>
+
+      <div className="mt-4 border-t border-slate-100 pt-4">
+        <h4 className="font-semibold text-sm">School details printed on the report card</h4>
+        <div className="grid sm:grid-cols-2 gap-3 mt-3">
+          <div><label className="label">School address</label><input className="field" value={schoolAddress} onChange={(e) => setSchoolAddress(e.target.value)} placeholder="School address"/></div>
+          <div><label className="label">School phone</label><input className="field" value={schoolPhone} onChange={(e) => setSchoolPhone(e.target.value)} placeholder="Phone number"/></div>
+          <div><label className="label">School email</label><input className="field" type="email" value={schoolEmail} onChange={(e) => setSchoolEmail(e.target.value)} placeholder="School email"/></div>
+          <div><label className="label">Principal's name</label><input className="field" value={schoolPrincipal} onChange={(e) => setSchoolPrincipal(e.target.value)} placeholder="Principal / Head of School"/></div>
+        </div>
+        <button className="btn btn-light mt-3" onClick={() => void saveSchoolDetails()} disabled={schoolSaving}>{schoolSaving ? "Saving..." : "Save school details"}</button>
+      </div>
+
+      {currentStudent && <div className="mt-4 grid sm:grid-cols-[1fr_auto] gap-2 items-end">
+        <div><label className="label">Principal's comment for {currentStudent.full_name}</label><textarea className="field min-h-20" maxLength={1000} value={principalDraft} onChange={(e) => setPrincipalDraft(e.target.value)} placeholder="Enter principal's comment"/></div>
+        <button className="btn btn-light" onClick={() => void savePrincipalComment()} disabled={savingPrincipal}>{savingPrincipal ? "Saving..." : "Save principal comment"}</button>
+      </div>}
       {principalNotice && <p className="text-xs text-emerald-700 mt-2">{principalNotice}</p>}
-      <div className="mt-4 flex flex-wrap gap-2">{students.map((s) => <button key={s.id} onClick={() => setSelectedStudentId(s.id)} className={`px-3 py-2 rounded-lg text-xs border ${currentStudent?.id === s.id ? "bg-blue-50 border-blue-300 text-blue-800 font-bold" : "border-slate-200 text-slate-600"}`}>{s.full_name}</button>)}</div>
+
+      <div className="mt-4 flex flex-wrap gap-2">
+        {students.map((s) => <button key={s.id} onClick={() => setSelectedStudentId(s.id)} className={`px-3 py-2 rounded-lg text-xs border ${currentStudent?.id === s.id ? "bg-blue-50 border-blue-300 text-blue-800 font-bold" : "border-slate-200 text-slate-600"}`}>{s.full_name}</button>)}
+      </div>
       {selectedTerm && selectedTerm.status !== "published" && <p className="mt-3 rounded-lg bg-amber-50 p-3 text-xs text-amber-800">Preview only: this term is {selectedTerm.status}. Final publication and immutable report snapshots are a separate step.</p>}
     </div>
-    {loading ? <div className="card p-10 text-center text-sm text-slate-500">Compiling report-card data...</div> : !currentStudent ? <div className="card p-10 text-center"><FileText className="mx-auto text-slate-300" size={30}/><p className="mt-3 font-semibold">No active students found for this class and term.</p></div> : <div id="klasrum-report-print" className="bg-white border border-slate-200 shadow-sm rounded-xl p-5 md:p-8 max-w-[900px] mx-auto text-slate-900 report-page">
-      <header className="text-center border-b-2 border-slate-800 pb-4"><div className="flex items-center justify-center gap-4">{logoUrl ? <img src={logoUrl} alt="School logo" className="w-16 h-16 object-contain"/> : <div className="w-16 h-16 rounded-full border-2 border-slate-700 grid place-items-center font-black text-lg">{initials(schoolName)}</div>}<div><h1 className="text-2xl font-black uppercase tracking-wide">{schoolName}</h1><p className="text-xs mt-1">{schoolAddress || "School address not yet configured"}{schoolPhone ? ` · ${schoolPhone}` : ""}{schoolEmail ? ` · ${schoolEmail}` : ""}</p><p className="text-sm font-bold mt-2 tracking-[.2em]">STUDENT TERMINAL REPORT</p></div></div></header>
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-5 gap-y-2 text-xs border-b border-slate-300 py-4"><div><b>Student:</b> {currentStudent.full_name}</div><div><b>Admission No:</b> {currentStudent.admission_number}</div><div><b>Class:</b> {selectedClass?.name} {selectedClass?.arm}</div><div><b>Gender:</b> {currentStudent.gender || "—"}</div><div><b>Session:</b> {selectedSession?.name || "—"}</div><div><b>Term:</b> {selectedTerm?.term_name || "—"}</div><div><b>Form Teacher:</b> {formTeacher}</div><div><b>Class Size:</b> {students.length}</div></div>
-      <h3 className="font-bold text-sm mt-4 mb-2">Academic Performance</h3><table className="w-full text-xs border-collapse"><thead><tr className="bg-slate-100"><th className="border border-slate-400 p-2 text-left">Subject</th><th className="border border-slate-400 p-2">CA</th><th className="border border-slate-400 p-2">Exam</th><th className="border border-slate-400 p-2">Total</th><th className="border border-slate-400 p-2">Grade</th><th className="border border-slate-400 p-2">Remark</th></tr></thead><tbody>{subjects.map((sub) => { const sc = currentStudent.scores[sub.id]; return <tr key={sub.id}><td className="border border-slate-400 p-2">{sub.name}</td><td className="border border-slate-400 p-2 text-center">{sc ? fmt(Number(sc.ca_score)) : "—"}</td><td className="border border-slate-400 p-2 text-center">{sc ? fmt(Number(sc.exam_score)) : "—"}</td><td className="border border-slate-400 p-2 text-center font-bold">{sc ? fmt(Number(sc.subject_total)) : "—"}</td><td className="border border-slate-400 p-2 text-center">{sc?.subject_grade || "—"}</td><td className="border border-slate-400 p-2">{getRemark(sc)}</td></tr>; })}</tbody></table>
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-3 text-xs"><div className="border border-slate-400 p-2"><b>Aggregate Total</b><div className="text-lg font-black">{fmt(currentStudent.overall)}</div></div><div className="border border-slate-400 p-2"><b>Average</b><div className="text-lg font-black">{fmt(currentStudent.average)}%</div></div><div className="border border-slate-400 p-2"><b>Class Position</b><div className="text-lg font-black">{ordinal(currentStudent.position)}</div></div><div className="border border-slate-400 p-2"><b>Subjects Offered</b><div className="text-lg font-black">{subjects.length}</div></div></div>
-      <div className="grid sm:grid-cols-2 gap-4 mt-4 text-xs"><div className="border border-slate-300 p-3"><b>Attendance</b><div className="grid grid-cols-3 gap-2 mt-2"><span>School days: {classDays || "—"}</span><span>Present: {currentStudent.present}</span><span>Absent: {currentStudent.absent}</span></div></div><div className="border border-slate-300 p-3"><b>Affective / Psychomotor Traits</b><div className="grid grid-cols-2 gap-1 mt-2">{Object.entries(currentStudent.conduct || {}).length ? Object.entries(currentStudent.conduct).map(([k,v]) => <span key={k}>{k.replaceAll("_", " ")}: <b>{String(v)}</b></span>) : <span className="text-slate-500">Not yet assessed</span>}</div></div></div>
-      <div className="mt-4 grid sm:grid-cols-2 gap-4 text-xs"><div className="border border-slate-300 p-3 min-h-20"><b>Form Teacher's Comment</b><p className="mt-2 whitespace-pre-wrap">{currentStudent.formComment || "No form-teacher comment recorded."}</p><p className="mt-4">Name: {formTeacher}</p></div><div className="border border-slate-300 p-3 min-h-20"><b>Principal's Comment</b><p className="mt-2 whitespace-pre-wrap">{currentStudent.principalComment || "No principal's comment recorded."}</p><p className="mt-4">Name: {schoolPrincipal || principalName || "School Administrator"}</p></div></div>
-      <div className="grid grid-cols-2 gap-10 mt-8 text-xs"><div className="border-t border-slate-500 pt-2">Form Teacher's Signature</div><div className="border-t border-slate-500 pt-2">Principal's Signature / School Stamp</div></div><p className="text-[10px] text-center text-slate-500 mt-6">Generated by Klasrum · {new Date().toLocaleDateString()}</p>
-    </div>}
-    <div className="no-print text-xs text-slate-500 text-center">Use your browser's print dialog and choose “Save as PDF”. Each selected student's report card is formatted for A4 printing.</div>
+
+    {loading ? <div className="card p-10 text-center text-sm text-slate-500">Compiling report-card data...</div>
+      : !currentStudent ? <div className="card p-10 text-center"><FileText className="mx-auto text-slate-300" size={30}/><p className="mt-3 font-semibold">No active students found for this class and term.</p></div>
+      : <div id="klasrum-report-print">
+          {(printingAll ? students : [currentStudent]).map((student) => renderReportCard(student))}
+        </div>}
+
+    <div className="no-print text-xs text-slate-500 text-center">Individual printing creates one A4 report. Bulk download creates one combined PDF with one student per page.</div>
   </section>;
 }
