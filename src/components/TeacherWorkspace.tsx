@@ -40,7 +40,7 @@ export default function TeacherWorkspace({ schoolId, teacherId }: Props) {
   const [existingScores, setExistingScores] = useState<Record<string, ExistingScore>>({});
   const [drafts, setDrafts] = useState<Record<string, ScoreDraft>>({});
   const [scoresLoading, setScoresLoading] = useState(false);
-  const [savingStudentId, setSavingStudentId] = useState<string | null>(null);
+  const [savingAll, setSavingAll] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true); setError("");
@@ -175,43 +175,90 @@ export default function TeacherWorkspace({ schoolId, teacherId }: Props) {
     setNotice("");
   };
 
-  const saveStudentScore = async (student: StudentRow) => {
-    if (!selectedSubject || !selectedTerm || !gradingScale || !scoreEntryOpen) return;
-    const draft = drafts[student.id] || { ca: "", exam: "", reason: "" };
-    const ca = numericValue(draft.ca);
-    const exam = numericValue(draft.exam);
-    if (ca === null || exam === null || !Number.isFinite(ca) || !Number.isFinite(exam)) {
-      setError(`Enter both CA and examination scores for ${student.full_name}.`); return;
-    }
-    if (ca < 0 || ca > Number(gradingScale.ca_max)) {
-      setError(`The CA score for ${student.full_name} must be between 0 and ${gradingScale.ca_max}, according to the school's grading configuration.`); return;
-    }
-    if (exam < 0 || exam > Number(gradingScale.exam_max)) {
-      setError(`The examination score for ${student.full_name} must be between 0 and ${gradingScale.exam_max}, according to the school's grading configuration.`); return;
-    }
-    const existing = existingScores[student.id];
-    const changed = Boolean(existing && (Number(existing.ca_score) !== ca || Number(existing.exam_score) !== exam));
-    if (existing && !changed) { setNotice(`No changes to save for ${student.full_name}.`); setError(""); return; }
-    if (changed && !draft.reason.trim()) {
-      setError(`Please provide a correction reason for ${student.full_name} before saving the revised scores.`); return;
+  const saveAllScores = async () => {
+    if (!selectedSubject || !selectedTerm || !gradingScale || !scoreEntryOpen || !selectedClass) return;
+
+    setError("");
+    setNotice("");
+
+    const pending: Array<{ student: StudentRow; ca: number; exam: number; reason: string; changed: boolean }> = [];
+    const validationErrors: string[] = [];
+
+    for (const student of selectedClass.students) {
+      const draft = drafts[student.id] || { ca: "", exam: "", reason: "" };
+      const existing = existingScores[student.id];
+      const ca = numericValue(draft.ca);
+      const exam = numericValue(draft.exam);
+
+      // Leave a completely untouched, never-saved row out of this batch.
+      if (!existing && !draft.ca.trim() && !draft.exam.trim()) continue;
+      if (ca === null || exam === null || !Number.isFinite(ca) || !Number.isFinite(exam)) {
+        validationErrors.push(`${student.full_name}: enter both CA and examination scores.`);
+        continue;
+      }
+      if (ca < 0 || ca > Number(gradingScale.ca_max)) {
+        validationErrors.push(`${student.full_name}: CA must be between 0 and ${gradingScale.ca_max}.`);
+        continue;
+      }
+      if (exam < 0 || exam > Number(gradingScale.exam_max)) {
+        validationErrors.push(`${student.full_name}: examination must be between 0 and ${gradingScale.exam_max}.`);
+        continue;
+      }
+
+      const changed = Boolean(existing && (Number(existing.ca_score) !== ca || Number(existing.exam_score) !== exam));
+      if (existing && changed && !draft.reason.trim()) {
+        validationErrors.push(`${student.full_name}: provide a correction reason.`);
+        continue;
+      }
+      if (!existing || changed) pending.push({ student, ca, exam, reason: draft.reason.trim(), changed });
     }
 
-    setSavingStudentId(student.id); setError(""); setNotice("");
+    if (validationErrors.length) {
+      setError(`Please correct the following before saving:\n${validationErrors.join("\n")}`);
+      return;
+    }
+    if (!pending.length) {
+      setNotice("There are no new or changed scores to save.");
+      return;
+    }
+
+    setSavingAll(true);
+    let successCount = 0;
+    const failures: string[] = [];
     try {
-      const { error: rpcError } = await supabase.rpc("save_subject_score", {
-        p_student_id: student.id,
-        p_subject_id: selectedSubject.id,
-        p_term_id: selectedTerm.id,
-        p_ca_score: ca,
-        p_exam_score: exam,
-        p_reason: changed ? draft.reason.trim() : null,
-      });
-      if (rpcError) throw rpcError;
+      // Save each student through the existing audited RPC. One failed row does not
+      // prevent the remaining students from being attempted.
+      for (const item of pending) {
+        const { error: rpcError } = await supabase.rpc("save_subject_score", {
+          p_student_id: item.student.id,
+          p_subject_id: selectedSubject.id,
+          p_term_id: selectedTerm.id,
+          p_ca_score: item.ca,
+          p_exam_score: item.exam,
+          p_reason: item.changed ? item.reason : null,
+        });
+        if (rpcError) failures.push(`${item.student.full_name}: ${rpcError.message}`);
+        else successCount += 1;
+      }
+
       await loadScores();
-      setNotice(`Scores saved successfully for ${student.full_name}. The system retains the assessment scores and calculates the total.`);
+      if (failures.length) {
+        // Keep failed rows' typed values on screen so the teacher can retry them.
+        const failedIds = new Set(pending.filter((item) => failures.some((message) => message.startsWith(`${item.student.full_name}:`))).map((item) => item.student.id));
+        setDrafts((current) => {
+          const restored = { ...current };
+          failedIds.forEach((id) => { restored[id] = drafts[id] || restored[id]; });
+          return restored;
+        });
+        setError(`${successCount} of ${pending.length} student record(s) saved. The following could not be saved:\n${failures.join("\n")}`);
+      } else {
+        setNotice(`Successfully saved scores for all ${successCount} student(s). Klasrum calculates the totals automatically.`);
+      }
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : `Unable to save scores for ${student.full_name}.`);
-    } finally { setSavingStudentId(null); }
+      setError(err instanceof Error ? err.message : "An unexpected error occurred while saving the class scores.");
+    } finally {
+      setSavingAll(false);
+    }
   };
 
   const filtered = classes.filter((item) => {
@@ -272,29 +319,33 @@ export default function TeacherWorkspace({ schoolId, teacherId }: Props) {
         {!scoreEntryOpen && <div className="mb-3 p-3 rounded-xl bg-slate-100 text-slate-600 text-sm flex gap-2"><LockKeyhole size={17}/>This term is not open. Scores cannot be submitted or corrected.</div>}
         {scoresLoading ? <div className="py-10 text-center text-sm text-slate-400">Loading saved scores...</div> : selectedClass.students.length === 0 ? <div className="py-8 text-center text-sm text-slate-500">There are no active students in this class.</div> :
           <div className="overflow-x-auto -mx-1">
-            <table className="table w-full min-w-[760px]">
-              <thead><tr><th>Student name</th><th>Student ID / Admission no.</th><th>CA score ({formatMax(gradingScale.ca_max)} max)</th><th>Examination score ({formatMax(gradingScale.exam_max)} max)</th><th>Action</th></tr></thead>
+            <table className="table w-full min-w-[680px]">
+              <thead><tr><th>Student name</th><th>Student ID / Admission no.</th><th>CA score ({formatMax(gradingScale.ca_max)} max)</th><th>Examination score ({formatMax(gradingScale.exam_max)} max)</th></tr></thead>
               <tbody>{selectedClass.students.map((student) => {
                 const draft = drafts[student.id] || { ca: "", exam: "", reason: "" };
                 const existing = existingScores[student.id];
-                const isChanged = Boolean(existing && (Number(existing.ca_score) !== numericValue(draft.ca) || Number(existing.exam_score) !== numericValue(draft.exam)));
                 return <tr key={student.id}>
                   <td className="font-semibold">{student.full_name}</td>
                   <td className="text-slate-500">{student.admission_number}</td>
-                  <td><input aria-label={`CA score for ${student.full_name}`} className="field !w-28 !py-2" type="number" inputMode="decimal" min="0" max={gradingScale.ca_max} step="0.01" value={draft.ca} disabled={!scoreEntryOpen || savingStudentId === student.id} onChange={(e) => updateDraft(student.id, "ca", e.target.value)} placeholder="CA" /></td>
-                  <td><input aria-label={`Examination score for ${student.full_name}`} className="field !w-32 !py-2" type="number" inputMode="decimal" min="0" max={gradingScale.exam_max} step="0.01" value={draft.exam} disabled={!scoreEntryOpen || savingStudentId === student.id} onChange={(e) => updateDraft(student.id, "exam", e.target.value)} placeholder="Exam" /></td>
-                  <td><button type="button" className="btn btn-primary !py-2 !px-3" disabled={!scoreEntryOpen || savingStudentId === student.id || !draft.ca.trim() || !draft.exam.trim() || (Boolean(existing) && !isChanged)} onClick={() => void saveStudentScore(student)}>{savingStudentId === student.id ? "Saving..." : existing ? <><Save size={14}/> Save correction</> : <><Save size={14}/> Save scores</>}</button></td>
+                  <td><input aria-label={`CA score for ${student.full_name}`} className="field !w-28 !py-2" type="number" inputMode="decimal" min="0" max={gradingScale.ca_max} step="0.01" value={draft.ca} disabled={!scoreEntryOpen || savingAll} onChange={(e) => updateDraft(student.id, "ca", e.target.value)} placeholder="CA" /></td>
+                  <td><input aria-label={`Examination score for ${student.full_name}`} className="field !w-32 !py-2" type="number" inputMode="decimal" min="0" max={gradingScale.exam_max} step="0.01" value={draft.exam} disabled={!scoreEntryOpen || savingAll} onChange={(e) => updateDraft(student.id, "exam", e.target.value)} placeholder="Exam" /></td>
                 </tr>;
               })}</tbody>
             </table>
           </div>}
+        <div className="mt-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-t border-slate-100 pt-4">
+          <p className="text-xs text-slate-500">Enter scores for as many students as needed, then save the entire class together. Existing scores only need saving when changed.</p>
+          <button type="button" className="btn btn-primary justify-center" onClick={() => void saveAllScores()} disabled={!scoreEntryOpen || scoresLoading || savingAll || !selectedClass.students.length}>
+            {savingAll ? <><RefreshCw size={15} className="animate-spin"/> Saving class scores...</> : <><Save size={15}/> Save all class scores</>}
+          </button>
+        </div>
         {selectedClass.students.some((student) => {
           const existing = existingScores[student.id]; const draft = drafts[student.id];
           return existing && draft && (Number(existing.ca_score) !== numericValue(draft.ca) || Number(existing.exam_score) !== numericValue(draft.exam));
         }) && <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4"><h5 className="font-semibold text-sm text-amber-900">Score correction reasons</h5><p className="text-xs text-amber-800 mt-1">A reason is required for every correction to an already saved score. Enter the reason against the affected student before saving.</p><div className="space-y-3 mt-3">{selectedClass.students.filter((student) => {
           const existing = existingScores[student.id]; const draft = drafts[student.id];
           return existing && draft && (Number(existing.ca_score) !== numericValue(draft.ca) || Number(existing.exam_score) !== numericValue(draft.exam));
-        }).map((student) => <div key={student.id}><label className="label">{student.full_name} · {student.admission_number}</label><input className="field" value={drafts[student.id]?.reason || ""} onChange={(e) => updateDraft(student.id, "reason", e.target.value)} placeholder="Explain why these scores are being corrected" disabled={savingStudentId === student.id}/></div>)}</div></div>}
+        }).map((student) => <div key={student.id}><label className="label">{student.full_name} · {student.admission_number}</label><input className="field" value={drafts[student.id]?.reason || ""} onChange={(e) => updateDraft(student.id, "reason", e.target.value)} placeholder="Explain why these scores are being corrected" disabled={savingAll}/></div>)}</div></div>}
         <p className="text-xs text-slate-400 mt-4">Only CA and examination marks are entered here. No total field is provided; totals and grades are calculated by the existing Klasrum database result engine and remain available to the class broadsheet and report card.</p>
       </>}
     </div>
