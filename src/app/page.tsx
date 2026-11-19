@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import TeacherAssignments from "@/components/TeacherAssignments";
 import TeacherWorkspace from "@/components/TeacherWorkspace";
 import TeacherResults from "@/components/TeacherResults";
+import ReportCards from "@/components/ReportCards";
 import {
   BookOpen, Users, GraduationCap, ClipboardCheck, ChartNoAxesCombined,
   Settings, Search, Bell, ChevronDown, Plus, ShieldCheck, Menu, X,
@@ -740,7 +741,7 @@ export default function Home() {
   const activeStudents = students.filter((student) => student.is_active).length;
   const navItems = identity?.role === "Admin" ? nav :
     identity?.role === "Teacher"
-      ? ([["Overview", ChartNoAxesCombined], ["Classes & Students", Users], ["My Teaching", GraduationCap], ["Attendance", ClipboardCheck], ...(isFormTeacher ? [["Results", BookOpen] as const] : [])] as const)
+      ? ([ ["Overview", ChartNoAxesCombined], ["Classes & Students", Users], ["My Teaching", GraduationCap], ["Attendance", ClipboardCheck], ...(isFormTeacher ? [["Results", BookOpen] as const] : []) ] as const)
       : [["Overview", ChartNoAxesCombined]] as const;
   const title = active === "Overview" ? "School overview" : active;
 
@@ -1032,6 +1033,8 @@ export default function Home() {
           <TeacherWorkspace schoolId={identity.schoolId} teacherId={identity.userId} />
         )}
 
+        {active === "Results & Publishing" && identity.role === "Admin" && <ReportCards adminId={identity.userId} schoolId={identity.schoolId} schoolName={identity.schoolName} logoUrl={identity.logoUrl} principalName={identity.fullName} />}
+
         {active === "School Settings" && <section className="space-y-5">
           <div className="card p-5 md:p-6">
             <div className="flex flex-wrap items-start justify-between gap-3">
@@ -1071,7 +1074,7 @@ export default function Home() {
           <div className="rounded-xl bg-blue-50 border border-blue-100 p-4 text-sm text-blue-900"><strong>How this works:</strong> Only one session is marked current. Only a term belonging to the current session can be activated. Previous sessions and their term records remain available for historical records.</div>
         </section>}
 
-        {active !== "Overview" && active !== "Classes & Students" && active !== "My Teaching" && active !== "Subjects" && active !== "Staff Management" && active !== "Grading Configuration" && active !== "Teacher Assignments" && active !== "School Settings" && active !== "Results" && <div className="card p-6 max-w-3xl">
+        {active !== "Overview" && active !== "Classes & Students" && active !== "My Teaching" && active !== "Subjects" && active !== "Staff Management" && active !== "Grading Configuration" && active !== "Teacher Assignments" && active !== "School Settings" && active !== "Results & Publishing" && <div className="card p-6 max-w-3xl">
           <div className="w-11 h-11 rounded-xl bg-amber-50 text-amber-700 grid place-items-center"><AlertCircle size={20} /></div>
           <h3 className="font-bold text-lg mt-4">{active}</h3>
           <p className="text-sm text-slate-500 mt-2">This module is not connected to live database records yet. The Classes & Students module is now connected to Supabase.</p>
